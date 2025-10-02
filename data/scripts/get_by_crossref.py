@@ -154,7 +154,7 @@ class CrossrefMetaProcessor:
 
 
 if __name__ == "__main__":
-    processor = CrossrefMetaProcessor("../meta_data/1002 Clinical Medicine.csv")
+    processor = CrossrefMetaProcessor("../meta_data/1304 Fine Art.csv")
     processor.merge_metadata_with_crossref()
     processor.print_statistics()
 

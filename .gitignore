@@ -1,0 +1,62 @@
+# ===== Python 编译缓存 =====
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+*.so
+
+# ===== 虚拟环境 =====
+.venv/
+venv/
+env/
+
+# ===== Jupyter Notebook 检查点 =====
+.ipynb_checkpoints/
+
+# ===== 数据缓存/向量缓存 =====
+*.npz
+*.npy
+*.h5
+*.ckpt
+*.pth
+*.pt
+.cache_embeddings/
+*/.cache_embeddings/
+
+# ===== 模型文件夹（细分）=====
+/models/*
+!/models/**/           # 保留子目录
+!/models/**/config.json
+!/models/**/tokenizer.json
+!/models/**/vocab.txt
+!/models/**/special_tokens_map.json
+!/models/**/merges.txt
+!/models/**/tokenizer_config.json
+# 忽略大文件（模型权重）
+*.bin
+*.safetensors
+*.onnx
+*.tar.gz
+
+# ===== 日志/输出文件 =====
+*.log
+*.out
+*.err
+logs/
+output/
+results/
+similarity_scores.csv
+
+# ===== IDE 配置 =====
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+
+# ===== 敏感配置 =====
+.env
