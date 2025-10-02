@@ -2,9 +2,9 @@
 
 ## 1.原始数据获取
 首先从Incites数据库中下载不同一级学科下的随机100篇论文的元数据，如下图：
-![img.png](incites.png)
+![img.png](./md/incites.png)
 
-![incites2.png](incites2.png)
+![incites2.png](./md/incites2.png)
 
 把这些数据作为不同一级学科的原始数据存放在data/meta_data路径下
 
