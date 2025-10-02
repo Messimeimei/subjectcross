@@ -15,7 +15,7 @@ from collections import defaultdict
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from lfs.vector2discipline import PaperDisciplineScorer, cache_path
+from lfs.vector2discipline import VectorDisciplineScorer, cache_path
 
 # ========= 环境变量 =========
 load_dotenv()
@@ -66,7 +66,7 @@ class CitationDisciplineScorer:
         self.weights = weights or {"affil": 0.1, "journal": 0.3, "titleabs": 0.6}
 
         # 初始化打分类
-        self.scorer = PaperDisciplineScorer(EMB_MODEL_NAME)
+        self.scorer = VectorDisciplineScorer(EMB_MODEL_NAME)
         self.code2name, self.code2intro = self.scorer.load_disciplines(CSV_PATH, JSON_PATH)
         cpath = cache_path(EMB_MODEL_NAME, CSV_PATH, JSON_PATH)
         self.emb, self.codes, self.names, self.texts = self.scorer.ensure_cache(
@@ -133,13 +133,13 @@ class CitationDisciplineScorer:
 
         for meta in metas:
             s_affil_raw = self.scorer.score_from_affiliations(
-                meta["authors_affils"], self.codes, self.names, self.texts, self.emb, topn=topn_each_paper
+                meta["authors_affils"], self.codes, self.names, self.texts, self.emb
             )
             s_journal_raw = self.scorer.score_from_journal(
-                meta["journal"], self.codes, self.names, self.texts, self.emb, topn=topn_each_paper
+                meta["journal"], self.codes, self.names, self.texts, self.emb
             )
             s_ta_raw = self.scorer.score_from_title_abstract(
-                meta["title"], meta["abstract"], self.codes, self.names, self.texts, self.emb, topn=topn_each_paper
+                meta["title"], meta["abstract"], self.codes, self.names, self.texts, self.emb
             )
 
             # 统一成 “代码: 分数”

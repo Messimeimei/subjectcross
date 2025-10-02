@@ -8,7 +8,7 @@
     2. 对doi通过crossref的rest接口获取论文的元数据
     3. 把2种数据进行拼接，筛选出有用的元数据并保存到processed_data文件夹中
 """
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import re
 import requests
@@ -116,10 +116,27 @@ class CrossrefMetaProcessor:
 
         doi_col = [col for col in self.df_raw.columns if col.strip().lower() == "doi"][0]
 
-        crossref_records = []
-        for doi in tqdm(self.df_raw[doi_col], desc="Fetching Crossref metadata"):
-            meta = self.get_crossref_metadata(doi)
-            crossref_records.append(meta)
+        crossref_records = [None] * len(self.df_raw)
+
+        # 🚀 使用多线程加速获取
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            futures = {executor.submit(self.get_crossref_metadata, doi): i
+                       for i, doi in enumerate(self.df_raw[doi_col])}
+
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Fetching Crossref metadata"):
+                i = futures[future]
+                try:
+                    crossref_records[i] = future.result()
+                except Exception as e:
+                    print(f"⚠️ DOI {self.df_raw[doi_col].iloc[i]} 获取失败: {e}")
+                    crossref_records[i] = {
+                        "DOI": self.df_raw[doi_col].iloc[i],
+                        "CR_学科": [],
+                        "CR_摘要": "",
+                        "CR_作者和机构": [],
+                        "CR_参考文献DOI": [],
+                        "CR_出版商": "",
+                    }
 
         crossref_df = pd.DataFrame(crossref_records)
 
@@ -154,7 +171,7 @@ class CrossrefMetaProcessor:
 
 
 if __name__ == "__main__":
-    processor = CrossrefMetaProcessor("../meta_data/1304 Fine Art.csv")
+    processor = CrossrefMetaProcessor("../meta_data/1202 Business Administration.csv")
     processor.merge_metadata_with_crossref()
     processor.print_statistics()
 

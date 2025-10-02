@@ -1,79 +1,313 @@
 # -*- coding: utf-8 -*-
+"""
+批量运行：从 CSV 输入，按 batch 计算每篇论文的 117 学科分数字典并输出 Top2 学科
+依赖模块（你已经提供）：
+  - lfs.vector2discipline.VectorDisciplineScorer
+  - lfs.direction2discipline.Direction2Discipline
+  - lfs.cite2discipline.CitationDisciplineScorer  (USE_CITATION=true 时启用)
+"""
+
+import os
 import ast
-import os, json
+import json
+from typing import List, Dict, Tuple, Optional
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import pandas as pd
 from dotenv import load_dotenv
-from pipeline.score import IntegratedDisciplineScorer
 
+# 先加载环境变量（只加载一次，放最前面）
 load_dotenv()
 
-import pandas as pd
+# ==== 导入你已有的打分模块（路径按你的项目结构来） ====
+from lfs.cite2discipline import CitationDisciplineScorer
+from lfs.direction2discipline import Direction2Discipline
+from lfs.vector2discipline import VectorDisciplineScorer, cache_path
 
-def safe_str(row, col_name: str, default: str = "") -> str:
-    """
-    从 DataFrame 的行中安全获取某一列，确保返回字符串。
-    - 如果值为 NaN / None，则返回 default
-    - 否则转成字符串
-    """
-    val = row.get(col_name, default)
-    if pd.isna(val):
-        return default
-    return str(val)
+# ==== 读 env ====
+EMB_MODEL_NAME = os.getenv("EMB_MODEL_NAME", "../models/bge-m3")
+DISC_CSV_PATH  = os.getenv("CSV_PATH", "../data/zh_disciplines_with_code.csv")
+DISC_JSON_PATH = os.getenv("JSON_PATH", "../data/zh_discipline_intro_with_code.json")
+CACHE_DIR      = os.getenv("CACHE_DIR", "../models/bge-m3/.cache_embeddings")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+# 向量化/检索类参数（vector2discipline 内部会读 env；此处只管 CSV 批处理大小）
+DEFAULT_CSV_BATCH_SIZE = int(os.getenv("CSV_BATCH_SIZE", 64))
 
 
-def process_csv(csv_file: str, topn: int = 3, keep_topk: int = 3):
+# 是否启用引用
+USE_CITATION          = os.getenv("USE_CITATION").lower() == "true"
+CITATION_MAX_WORKERS  = int(os.getenv("CITATION_MAX_WORKERS", 8))
+
+# 5 路权重（启用引用时生效）
+W_AFFIL     = float(os.getenv("W_AFFIL"))
+W_JOURNAL   = float(os.getenv("W_JOURNAL"))
+W_TITLEABS  = float(os.getenv("W_TITLEABS"))
+W_DIRECTION = float(os.getenv("W_DIRECTION"))
+W_CITATION  = float(os.getenv("W_CITATION"))
+
+# 4 路权重（禁用引用时生效）
+W4_AFFIL     = float(os.getenv("W4_AFFIL",     "0.05"))
+W4_JOURNAL   = float(os.getenv("W4_JOURNAL",   "0.05"))
+W4_TITLEABS  = float(os.getenv("W4_TITLEABS",  "0.6"))
+W4_DIRECTION = float(os.getenv("W4_DIRECTION", "0.3"))
+
+
+# ========= 小工具 =========
+def safe_str(row, key: str, default: str = "") -> str:
+    v = row.get(key, default)
+    try:
+        if pd.isna(v):  # type: ignore
+            return default
+    except Exception:
+        pass
+    return str(v)
+
+def _topn_mask(d: Dict[str, float], n: int) -> Dict[str, float]:
+    if n is None or n <= 0:
+        return d
+    items = sorted(d.items(), key=lambda x: x[1], reverse=True)
+    allow = {k for k, _ in items[:n]}
+    return {k: (v if k in allow else 0.0) for k, v in d.items()}
+
+def _sum_dicts(dicts: List[Dict[str, float]], weights: List[float]) -> Dict[str, float]:
+    out = defaultdict(float)
+    for d, w in zip(dicts, weights):
+        if w <= 0 or not d:
+            continue
+        for k, v in d.items():
+            out[k] += w * float(v)
+    return dict(out)
+
+
+# ========= 主流程 =========
+class BatchCSVRunner:
     """
-    从 CSV 文件读取数据，逐行调用 IntegratedDisciplineScorer
-    返回：每篇论文的 117 学科分数（dict），以及 TopK 学科
+    负责：
+      1) 加载/缓存学科嵌入库
+      2) 批量对 3 路相似度来源做 GPU 向量化 + FAISS 批量检索
+      3) 方向均分（批量）
+      4) 引用聚合（可选，完全由 USE_CITATION 控制）
+      5) 按权重融合（USE_CITATION 决定权重集合），输出每篇论文 Top2 学科 + 原始字段
     """
-    scorer = IntegratedDisciplineScorer()
+    def __init__(self, use_gpu: bool = True):
+        # 相似度打分器 & 学科库
+        self.vec = VectorDisciplineScorer(EMB_MODEL_NAME, use_gpu=use_gpu)
+        self.code2name, self.code2intro = self.vec.load_disciplines(DISC_CSV_PATH, DISC_JSON_PATH)
+        cpath = cache_path(EMB_MODEL_NAME, DISC_CSV_PATH, DISC_JSON_PATH)
+        self.emb, self.codes, self.names, self.texts = self.vec.ensure_cache(cpath, self.code2name, self.code2intro)
+
+        # 方向
+        self.dir_scorer = Direction2Discipline(DISC_CSV_PATH)
+
+        # 引用（是否启用由 USE_CITATION 决定；不用缓存判断）
+        self.use_citation = USE_CITATION
+        if self.use_citation:
+            self.cite_scorer = CitationDisciplineScorer()
+        else:
+            self.cite_scorer = None
+
+        # 117 学科全零骨架
+        self.zero117 = {f"{c} {self.code2name[c]}": 0.0 for c in self.code2name.keys()}
+
+    # ---- 3 路相似度：批量一次性计算 ----
+    def _batch_three_sim_sources(
+            self,
+            batch_affils: List[List],
+            batch_journals: List[str],
+            batch_titles: List[str],
+            batch_abstracts: List[str],
+    ):
+        def _fill_all(d: Dict[str, float]) -> Dict[str, float]:
+            full = self.zero117.copy()
+            full.update(d)
+            return full
+
+        # 机构文本拼接
+        affil_texts = []
+        for row_affils in batch_affils:
+            acc = []
+            for a in (row_affils or []):
+                if isinstance(a, (list, tuple)) and len(a) == 2:
+                    acc.append(str(a[1]))
+                elif isinstance(a, str):
+                    acc.append(a)
+            affil_texts.append(" ".join(acc) if acc else "")
+
+        journal_texts = [j or "" for j in batch_journals]
+        ta_texts = [f"{(t or '')}\n{(a or '')}" for t, a in zip(batch_titles, batch_abstracts)]
+
+        s_affil = [_fill_all(d) for d in
+                   self.vec.score_batch(affil_texts, self.codes, self.names, self.emb)]
+        s_journal = [_fill_all(d) for d in
+                     self.vec.score_batch(journal_texts, self.codes, self.names, self.emb)]
+        s_ta = [_fill_all(d) for d in
+                self.vec.score_batch(ta_texts, self.codes, self.names, self.emb)]
+
+        return s_affil, s_journal, s_ta
+
+    def _batch_direction_scores(self, batch_directions: List[str]):
+        outs = []
+
+        def _fill_all(d: Dict[str, float]) -> Dict[str, float]:
+            full = self.zero117.copy()
+            full.update(d)
+            return full
+
+        for s in batch_directions:
+            d = self.dir_scorer.direction_to_scores(s or "")
+            outs.append(_fill_all(d))
+        return outs
+
+    # ---- 引用分数（批量；完全由 USE_CITATION 决定是否参与） ----
+    def _batch_citation_scores(self, batch_reference_dois: List[List[str]]) -> List[Dict[str, float]]:
+        if not self.use_citation:
+            return [self.zero117.copy() for _ in batch_reference_dois]
+
+        outs: List[Dict[str, float]] = [self.zero117.copy() for _ in batch_reference_dois]
+        with ThreadPoolExecutor(max_workers=CITATION_MAX_WORKERS) as ex:
+            futs = {}
+            for i, dois in enumerate(batch_reference_dois):
+                futs[ex.submit(self.cite_scorer.process_doi_list, dois or [])] = i
+            for f in as_completed(futs):
+                i = futs[f]
+                try:
+                    d = f.result()
+                except Exception as e:
+                    print(f"⚠️ 引用打分失败（第{i}条），已置零：{e}")
+                    d = self.zero117.copy()
+                outs[i] = d
+        return outs
+
+    # ---- 对一个 batch 融合生成结果（平滑融合版，与 Integrated 一致）----
+    def fuse_batch(
+        self,
+        batch_affils: List[List],
+        batch_journals: List[str],
+        batch_titles: List[str],
+        batch_abstracts: List[str],
+        batch_directions: List[str],
+        batch_reference_dois: Optional[List[List[str]]] = None
+    ) -> List[Dict[str, float]]:
+        n = len(batch_titles)
+        assert all(len(x) == n for x in [batch_affils, batch_journals, batch_abstracts, batch_directions]), "各输入列表长度需一致"
+
+        # 分别计算各来源分数
+        s_affil, s_journal, s_ta = self._batch_three_sim_sources(
+            batch_affils, batch_journals, batch_titles, batch_abstracts
+        )
+        s_dir = self._batch_direction_scores(batch_directions)
+        if batch_reference_dois is None:
+            batch_reference_dois = [[] for _ in range(n)]
+        s_cit = self._batch_citation_scores(batch_reference_dois)
+
+        fused_list: List[Dict[str, float]] = []
+        for i in range(n):
+            # 初始化全量 117 学科分数
+            fused_scores = self.zero117.copy()
+
+            if self.use_citation:
+                dicts   = [s_affil[i], s_journal[i], s_ta[i], s_dir[i], s_cit[i]]
+                weights = [W_AFFIL,    W_JOURNAL,    W_TITLEABS,   W_DIRECTION, W_CITATION]
+            else:
+                dicts   = [s_affil[i], s_journal[i], s_ta[i], s_dir[i]]
+                weights = [W4_AFFIL,   W4_JOURNAL,   W4_TITLEABS,  W4_DIRECTION]
+
+            # 正规化权重（和 Integrated 一致）
+            total_w = sum(weights)
+            for d, w in zip(dicts, weights):
+                if not d or w <= 0:
+                    continue
+                w_norm = w / total_w
+                for k in fused_scores:
+                    fused_scores[k] += d.get(k, 0.0) * w_norm
+
+            fused_list.append(fused_scores)
+        return fused_list
+
+
+def process_csv_in_batches(
+    csv_file: str,
+    batch_size: int = DEFAULT_CSV_BATCH_SIZE
+) -> List[Dict]:
+    """
+    读取 CSV，按 batch 计算每篇论文的 117 学科分字典，返回 list[dict]
+    每个 dict 包含：
+      DOI, 来源, 研究方向, 论文标题, CR_学科, CR_摘要, CR_作者机构, CR_参考文献DOI, top2_disciplines
+    """
     df = pd.read_csv(csv_file)
+    runner = BatchCSVRunner(use_gpu=True)
+    results: List[Dict] = []
 
-    results = []
+    for start in range(0, len(df), batch_size):
+        sub = df.iloc[start:start+batch_size]
 
-    for _, row in df.iterrows():
-        # 取字段
-        doi = safe_str(row, "DOI")
-        journal = safe_str(row, "来源")
-        title = safe_str(row, "论文标题")
-        abstract = safe_str(row, "CR_摘要")
-        direction = safe_str(row, "研究方向")
+        # ——收集批输入——
+        batch_affils, batch_journals, batch_titles = [], [], []
+        batch_abstracts, batch_dirs, batch_cites = [], [], []
 
-        affils = row.get("CR_作者机构", "")
-        affils = ast.literal_eval(affils)
-        dois = row.get("CR_参考文献DOI", "")
-        dois = ast.literal_eval(dois)     # 处理进来是字符串列表的情况
+        for _, row in sub.iterrows():
+            journal   = safe_str(row, "来源")
+            title     = safe_str(row, "论文标题")
+            abstract  = safe_str(row, "CR_摘要")
+            direction = safe_str(row, "研究方向")
+            aff_raw   = safe_str(row, "CR_作者和机构")
+            dois_raw  = safe_str(row, "CR_参考文献DOI")
 
-        # 🚀 调用综合打分器
-        fused_scores = scorer.fuse_scores(
-            affils=affils,
-            journal=journal,
-            title=title,
-            abstract=abstract,
-            direction=direction,
-            dois=dois,
-            topn=topn
+            try:
+                affils = ast.literal_eval(aff_raw) if aff_raw else []
+            except Exception:
+                affils = []
+            try:
+                dois = ast.literal_eval(dois_raw) if dois_raw else []
+            except Exception:
+                dois = []
+
+            batch_journals.append(journal)
+            batch_titles.append(title)
+            batch_abstracts.append(abstract)
+            batch_dirs.append(direction)
+            batch_affils.append(affils)
+            batch_cites.append(dois)
+
+        # ——批量融合——
+        fused_list = runner.fuse_batch(
+            batch_affils=batch_affils,
+            batch_journals=batch_journals,
+            batch_titles=batch_titles,
+            batch_abstracts=batch_abstracts,
+            batch_directions=batch_dirs,
+            batch_reference_dois=batch_cites
         )
 
-        topk = scorer.get_topn(fused_scores, n=keep_topk)
+        # ——组装输出——
+        for i, (_, row) in enumerate(sub.iterrows()):
+            fused = fused_list[i]
+            top3 = sorted([(k, v) for k, v in fused.items() if v > 0], key=lambda x: -x[1])[:3]
+            top3_disciplines = [{"discipline": k, "score": float(v)} for k, v in top3]
 
-        results.append({
-            "doi": doi,
-            "journal": journal,
-            "title": title,
-            "topk": topk,
-            "scores": fused_scores   # 117 学科全量
-        })
+            results.append({
+                "DOI": safe_str(row, "DOI"),
+                "来源": safe_str(row, "来源"),
+                "研究方向": safe_str(row, "研究方向"),
+                "论文标题": safe_str(row, "论文标题"),
+                "CR_学科": safe_str(row, "CR_学科"),
+                "CR_摘要": safe_str(row, "CR_摘要"),
+                "CR_作者机构": safe_str(row, "CR_作者机构"),
+                "CR_参考文献DOI": safe_str(row, "CR_参考文献DOI"),
+                "top3_disciplines": top3_disciplines
+            })
+
+        print(f"✅ 已处理 {min(start+batch_size, len(df))}/{len(df)}")
 
     return results
 
 
-# ========= 使用示例 =========
+# ========= CLI =========
 if __name__ == "__main__":
-    csv_file = "../data/processed_data/1001 Basic Medicine_merged.csv"   # 你的输入 CSV 文件
-    results = process_csv(csv_file, topn=2, keep_topk=2)
+    out = process_csv_in_batches("../data/processed_data/1202 Business Administration_merged.csv", batch_size=DEFAULT_CSV_BATCH_SIZE)
 
-    # 打印前两篇的结果
-    for r in results[:]:
-        print("\n📄 DOI:", r["doi"])
-        print("🔥 Top3:", r["topk"])
+    # 打印前几条示例
+    for r in out:
+        print(json.dumps(r, ensure_ascii=False, indent=2))
