@@ -292,9 +292,8 @@ def process_csv_in_batches(
                 "来源": safe_str(row, "来源"),
                 "研究方向": safe_str(row, "研究方向"),
                 "论文标题": safe_str(row, "论文标题"),
-                "CR_学科": safe_str(row, "CR_学科"),
                 "CR_摘要": safe_str(row, "CR_摘要"),
-                "CR_作者机构": safe_str(row, "CR_作者机构"),
+                "CR_作者和机构": safe_str(row, "CR_作者和机构"),
                 "CR_参考文献DOI": safe_str(row, "CR_参考文献DOI"),
                 "top3_disciplines": top3_disciplines
             })
@@ -303,11 +302,33 @@ def process_csv_in_batches(
 
     return results
 
+def save_results_to_csv(results: List[Dict], out_path=''):
+    """
+    把批量运行的结果保存到 CSV 文件
+    - results: process_csv_in_batches 的输出 list[dict]
+    - out_path: 输出路径，例如 "../output/results.csv"
+    """
+    # 转换成 DataFrame（top3_disciplines 需要转成 JSON 字符串保存）
+    rows = []
+    for r in results:
+        row = r.copy()
+        row["top3_disciplines"] = json.dumps(r["top3_disciplines"], ensure_ascii=False)
+        rows.append(row)
+    df_out = pd.DataFrame(rows)
+
+    # 保存到 CSV
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    df_out.to_csv(out_path, index=False, encoding="utf-8-sig")
+    print(f"💾 已保存结果到 {out_path}")
+
+
+
 
 # ========= CLI =========
 if __name__ == "__main__":
-    out = process_csv_in_batches("../data/processed_data/1202 Business Administration_merged.csv", batch_size=DEFAULT_CSV_BATCH_SIZE)
-
+    csv_name = '1202 Business Administration_merged.csv'
+    out = process_csv_in_batches(f"../data/processed_data/{csv_name}", batch_size=DEFAULT_CSV_BATCH_SIZE)
+    save_results_to_csv(out, f"../data/result_data/{csv_name}")
     # 打印前几条示例
-    for r in out:
+    for r in out[:10]:
         print(json.dumps(r, ensure_ascii=False, indent=2))
