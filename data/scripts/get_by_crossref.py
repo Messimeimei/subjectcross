@@ -1,25 +1,19 @@
+# -*- coding: utf-8 -*-
 # Created by Messimeimei
 # Created at 2025/9/16
 
-"""
-    通过crossref的rest接口获取数据
-    具体步骤如下：
-    1. 从incites网站下载的原始数据csv中提取出每篇论文的doi
-    2. 对doi通过crossref的rest接口获取论文的元数据
-    3. 把2种数据进行拼接，筛选出有用的元数据并保存到processed_data文件夹中
-"""
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import re
 import requests
 import pandas as pd
 from tqdm import tqdm
-from typing import List, Dict, Any
+from typing import List
 
 
 class CrossrefMetaProcessor:
-    def __init__(self, csv_path: str, output_dir: str = "../processed_data"):
-        self.csv_path = csv_path
+    def __init__(self, input_dir: str, output_dir: str = "../processed_data"):
+        self.input_dir = input_dir
         self.output_dir = output_dir
         self.df_raw = None
         self.df_merged = None
@@ -29,19 +23,29 @@ class CrossrefMetaProcessor:
         """去掉 JATS/XML 标签，返回规整的纯文本"""
         if not text:
             return ""
-        # 去标签
         txt = re.sub(r"<[^>]+>", "", text)
-        # 合并换行和多余空格
         txt = re.sub(r"\s+", " ", txt)
         return txt.strip()
 
-    def extract_clean_doi(self) -> pd.DataFrame:
-        """读取原始 CSV，清洗 DOI，并返回只包含要保留字段的 DataFrame"""
-        df = pd.read_csv(self.csv_path, encoding="utf-8-sig")
+    def load_all_csvs(self) -> pd.DataFrame:
+        """读取目录下所有 csv 并合并，清洗 DOI"""
+        all_dfs = []
+        for file in os.listdir(self.input_dir):
+            if file.endswith(".csv"):
+                path = os.path.join(self.input_dir, file)
+                try:
+                    df = pd.read_csv(path, encoding="utf-8-sig")
+                    all_dfs.append(df)
+                except Exception as e:
+                    print(f"⚠️ 文件 {file} 读取失败: {e}")
+
+        if not all_dfs:
+            raise RuntimeError("❌ 输入目录下没有可用的 CSV 文件")
+
+        df = pd.concat(all_dfs, ignore_index=True)
 
         # 统一小写比对
         cols = [c.strip().lower() for c in df.columns]
-
         doi_col = [df.columns[i] for i, c in enumerate(cols) if c == "doi"][0]
         source_col = [df.columns[i] for i, c in enumerate(cols) if "来源" in c][0]
         field_col = [df.columns[i] for i, c in enumerate(cols) if "研究方向" in c][0]
@@ -63,7 +67,6 @@ class CrossrefMetaProcessor:
         """根据 DOI 获取 Crossref 精简元数据"""
         base_url = "https://api.crossref.org/works/"
         url = f"{base_url}{doi}"
-
         try:
             headers = {"User-Agent": "Mozilla/5.0 (mailto:your_email@example.com)"}
             response = requests.get(url, headers=headers, timeout=15)
@@ -110,15 +113,13 @@ class CrossrefMetaProcessor:
             }
 
     def merge_metadata_with_crossref(self) -> str:
-        """合并原始 CSV 与 Crossref 精简字段并保存"""
+        """合并所有 CSV 与 Crossref 精简字段并保存一个文件"""
         if self.df_raw is None:
-            self.extract_clean_doi()
+            self.load_all_csvs()
 
         doi_col = [col for col in self.df_raw.columns if col.strip().lower() == "doi"][0]
-
         crossref_records = [None] * len(self.df_raw)
 
-        # 🚀 使用多线程加速获取
         with ThreadPoolExecutor(max_workers=16) as executor:
             futures = {executor.submit(self.get_crossref_metadata, doi): i
                        for i, doi in enumerate(self.df_raw[doi_col])}
@@ -139,21 +140,20 @@ class CrossrefMetaProcessor:
                     }
 
         crossref_df = pd.DataFrame(crossref_records)
-
         self.df_merged = pd.merge(self.df_raw, crossref_df, left_on=doi_col, right_on="DOI", how="left")
 
+        # 去掉摘要为空的论文
+        self.df_merged = self.df_merged[self.df_merged["CR_摘要"].str.strip() != ""]
+
         os.makedirs(self.output_dir, exist_ok=True)
-        out_file = os.path.join(
-            self.output_dir,
-            os.path.basename(self.csv_path).replace(".csv", "_merged.csv")
-        )
+        file_name = self.input_dir.split('/')[-1] + ".csv"
+        out_file = os.path.join(self.output_dir, file_name)
         self.df_merged.to_csv(out_file, index=False, encoding="utf-8-sig")
 
         print(f"✅ 合并完成，已保存到: {out_file}")
         return out_file
 
     def print_statistics(self):
-        """打印统计信息"""
         if self.df_merged is None:
             print("⚠️ 请先运行 merge_metadata_with_crossref()")
             return
@@ -171,7 +171,6 @@ class CrossrefMetaProcessor:
 
 
 if __name__ == "__main__":
-    processor = CrossrefMetaProcessor("../meta_data/1202 Business Administration.csv")
+    processor = CrossrefMetaProcessor("../meta_data/0202 Applied Economics")  # 输入目录
     processor.merge_metadata_with_crossref()
     processor.print_statistics()
-

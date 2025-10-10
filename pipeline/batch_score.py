@@ -15,26 +15,28 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
-from dotenv import load_dotenv
-
-# 先加载环境变量（只加载一次，放最前面）
-load_dotenv()
-
-# ==== 导入你已有的打分模块（路径按你的项目结构来） ====
+from pathlib import Path
+import os
 from lfs.cite2discipline import CitationDisciplineScorer
 from lfs.direction2discipline import Direction2Discipline
 from lfs.vector2discipline import VectorDisciplineScorer, cache_path
 
+BASE_DIR = Path(__file__).resolve().parents[1]  # /home/messi/pyprojects/subjectcross
+os.chdir(BASE_DIR)  # 强制切换到项目根目录
+print(f"📂 当前工作目录：{os.getcwd()}")
+
 # ==== 读 env ====
-EMB_MODEL_NAME = os.getenv("EMB_MODEL_NAME", "../models/bge-m3")
-DISC_CSV_PATH  = os.getenv("CSV_PATH", "../data/zh_disciplines_with_code.csv")
-DISC_JSON_PATH = os.getenv("JSON_PATH", "../data/zh_discipline_intro_with_code.json")
-CACHE_DIR      = os.getenv("CACHE_DIR", "../models/bge-m3/.cache_embeddings")
+from dotenv import load_dotenv
+load_dotenv()
+
+EMB_MODEL_NAME = os.getenv("EMB_MODEL_NAME", str(BASE_DIR / "models/bge-m3"))
+DISC_CSV_PATH  = os.getenv("CSV_PATH", str(BASE_DIR / "data/zh_disciplines_with_code.csv"))
+DISC_JSON_PATH = os.getenv("JSON_PATH", str(BASE_DIR / "data/zh_discipline_intro_with_code.json"))
+CACHE_DIR      = os.getenv("CACHE_DIR", str(BASE_DIR / "models/bge-m3/.cache_embeddings"))
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 # 向量化/检索类参数（vector2discipline 内部会读 env；此处只管 CSV 批处理大小）
 DEFAULT_CSV_BATCH_SIZE = int(os.getenv("CSV_BATCH_SIZE", 64))
-
 
 # 是否启用引用
 USE_CITATION          = os.getenv("USE_CITATION").lower() == "true"
@@ -50,8 +52,18 @@ W_CITATION  = float(os.getenv("W_CITATION"))
 # 4 路权重（禁用引用时生效）
 W4_AFFIL     = float(os.getenv("W4_AFFIL",     "0.05"))
 W4_JOURNAL   = float(os.getenv("W4_JOURNAL",   "0.05"))
-W4_TITLEABS  = float(os.getenv("W4_TITLEABS",  "0.6"))
-W4_DIRECTION = float(os.getenv("W4_DIRECTION", "0.3"))
+W4_TITLEABS  = float(os.getenv("W4_TITLEABS",  "0.5"))
+W4_DIRECTION = float(os.getenv("W4_DIRECTION", "0.4"))
+
+# 全局缓存 SentenceTransformer 模型（避免重复加载）
+_GLOBAL_MODEL = None
+
+def get_global_runner():
+    global _GLOBAL_MODEL
+    if _GLOBAL_MODEL is None:
+        print("🧠 正在加载全局向量模型（仅加载一次）...")
+        _GLOBAL_MODEL = BatchCSVRunner(use_gpu=True)
+    return _GLOBAL_MODEL
 
 
 # ========= 小工具 =========
@@ -237,7 +249,7 @@ def process_csv_in_batches(
       DOI, 来源, 研究方向, 论文标题, CR_学科, CR_摘要, CR_作者机构, CR_参考文献DOI, top2_disciplines
     """
     df = pd.read_csv(csv_file)
-    runner = BatchCSVRunner(use_gpu=True)
+    runner = get_global_runner()
     results: List[Dict] = []
 
     for start in range(0, len(df), batch_size):
@@ -326,7 +338,7 @@ def save_results_to_csv(results: List[Dict], out_path=''):
 
 # ========= CLI =========
 if __name__ == "__main__":
-    csv_name = '1202 Business Administration_merged.csv'
+    csv_name = '0202 Applied Economics.csv'
     out = process_csv_in_batches(f"../data/processed_data/{csv_name}", batch_size=DEFAULT_CSV_BATCH_SIZE)
     save_results_to_csv(out, f"../data/result_data/{csv_name}")
     # 打印前几条示例

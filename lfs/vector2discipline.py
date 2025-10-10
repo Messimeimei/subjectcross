@@ -18,7 +18,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ========= 环境变量 =========
-EMB_MODEL_NAME = os.getenv("EMB_MODEL_NAME", "../models/bge-m3")
+# 统一替换
+EMB_MODEL_NAME = os.getenv("EMB_MODEL_NAME", "models/bge-m3")
 CSV_PATH = os.getenv("CSV_PATH", "../data/zh_disciplines_with_code.csv")
 JSON_PATH = os.getenv("JSON_PATH", "../data/zh_discipline_intro_with_code.json")
 CACHE_DIR = os.getenv("CACHE_DIR", "../models/bge-m3/.cache_embeddings")
