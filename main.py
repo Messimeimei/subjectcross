@@ -72,7 +72,7 @@ def needs_processing(dir_name: str, processed_dir: str, result_dir: str) -> tupl
     return True, True
 
 
-def process_single_directory(input_dir: str, base_output_dir: str = "data/processed_data") -> str:
+def process_single_directory(input_dir: str, base_output_dir: str = "data/02crossref_data") -> str:
     """处理单个目录：获取Crossref元数据并保存为CSV"""
     dir_name = os.path.basename(input_dir)
     print(f"🔍 正在处理Crossref元数据: {dir_name}")
@@ -88,7 +88,7 @@ def process_single_directory(input_dir: str, base_output_dir: str = "data/proces
         return None
 
 
-def process_single_classification(csv_file: str, result_base_dir: str = "data/result_data") -> str:
+def process_single_classification(csv_file: str, result_base_dir: str = "data/03subject_data") -> str:
     """对单个CSV文件进行学科分类 - 按指定格式输出"""
     import json
     from pipeline.batch_score import DEFAULT_CSV_BATCH_SIZE
@@ -112,8 +112,8 @@ def process_single_classification(csv_file: str, result_base_dir: str = "data/re
 
 
 
-def batch_process_directories(root_dir: str, processed_base_dir: str = "data/processed_data",
-                              result_base_dir: str = "data/result_data") -> dict:
+def batch_process_directories(root_dir: str, processed_base_dir: str = "data/02crossref_data",
+                              result_base_dir: str = "data/03subject_data") -> dict:
     """
     批量处理所有目录，智能跳过已处理的文件
     返回处理统计信息
@@ -200,9 +200,9 @@ def batch_process_directories(root_dir: str, processed_base_dir: str = "data/pro
 def check_environment():
     """检查必要的环境和文件"""
     required_dirs = [
-        "data/meta_data",
-        "data/processed_data",
-        "data/result_data"
+        "data/01meta_data",
+        "data/02crossref_data",
+        "data/03subject_data"
     ]
 
     required_files = [
@@ -288,9 +288,9 @@ def print_final_statistics(stats: dict, result_dir: str):
 def main():
     """主函数"""
     # 配置路径 - 根据你的实际目录结构调整
-    ROOT_DIR = "data/meta_data"  # 包含多个学科目录的根目录
-    PROCESSED_DIR = "data/processed_data"  # Crossref处理结果目录
-    RESULT_DIR = "data/result_data"  # 最终学科分类结果目录
+    ROOT_DIR = "data/01meta_data"  # 包含多个学科目录的根目录
+    PROCESSED_DIR = "data/02crossref_data"  # Crossref处理结果目录
+    RESULT_DIR = "data/03subject_data"  # 最终学科分类结果目录
 
     print("🚀 开始批量处理学科数据...")
     print("=" * 60)
@@ -303,7 +303,7 @@ def main():
     # 检查是否有学科目录需要处理
     subdirs = get_all_subdirectories(ROOT_DIR)
     if not subdirs:
-        print("❌ 没有找到任何学科目录，请检查 data/meta_data 目录")
+        print("❌ 没有找到任何学科目录，请检查 data/01meta_data 目录")
         return 1
 
     print(f"\n📚 找到 {len(subdirs)} 个学科目录:")

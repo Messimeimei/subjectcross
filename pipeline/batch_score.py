@@ -13,13 +13,15 @@ import json
 from typing import List, Dict, Tuple, Optional
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+import sys
 import pandas as pd
 from pathlib import Path
 import os
 from lfs.cite2discipline import CitationDisciplineScorer
 from lfs.direction2discipline import Direction2Discipline
 from lfs.vector2discipline import VectorDisciplineScorer, cache_path
+
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 BASE_DIR = Path(__file__).resolve().parents[1]  # /home/messi/pyprojects/subjectcross
 os.chdir(BASE_DIR)  # 强制切换到项目根目录
@@ -37,6 +39,9 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 # 向量化/检索类参数（vector2discipline 内部会读 env；此处只管 CSV 批处理大小）
 DEFAULT_CSV_BATCH_SIZE = int(os.getenv("CSV_BATCH_SIZE", 64))
+
+# 保留学科数
+TOPN = int(os.getenv('TOPN', 3))
 
 # 是否启用引用
 USE_CITATION          = os.getenv("USE_CITATION").lower() == "true"
@@ -296,8 +301,8 @@ def process_csv_in_batches(
         # ——组装输出——
         for i, (_, row) in enumerate(sub.iterrows()):
             fused = fused_list[i]
-            top3 = sorted([(k, v) for k, v in fused.items() if v > 0], key=lambda x: -x[1])[:3]
-            top3_disciplines = [{"discipline": k, "score": float(v)} for k, v in top3]
+            top3 = sorted([(k, v) for k, v in fused.items() if v > 0], key=lambda x: -x[1])[:TOPN]
+            topn_disciplines = [{"discipline": k, "score": float(v)} for k, v in top3]
 
             results.append({
                 "DOI": safe_str(row, "DOI"),
@@ -307,7 +312,7 @@ def process_csv_in_batches(
                 "CR_摘要": safe_str(row, "CR_摘要"),
                 "CR_作者和机构": safe_str(row, "CR_作者和机构"),
                 "CR_参考文献DOI": safe_str(row, "CR_参考文献DOI"),
-                "top3_disciplines": top3_disciplines
+                "topn_disciplines": topn_disciplines
             })
 
         print(f"✅ 已处理 {min(start+batch_size, len(df))}/{len(df)}")
@@ -320,11 +325,11 @@ def save_results_to_csv(results: List[Dict], out_path=''):
     - results: process_csv_in_batches 的输出 list[dict]
     - out_path: 输出路径，例如 "../output/results.csv"
     """
-    # 转换成 DataFrame（top3_disciplines 需要转成 JSON 字符串保存）
+    # 转换成 DataFrame（topn_disciplines 需要转成 JSON 字符串保存）
     rows = []
     for r in results:
         row = r.copy()
-        row["top3_disciplines"] = json.dumps(r["top3_disciplines"], ensure_ascii=False)
+        row["topn_disciplines"] = json.dumps(r["topn_disciplines"], ensure_ascii=False)
         rows.append(row)
     df_out = pd.DataFrame(rows)
 
@@ -338,9 +343,9 @@ def save_results_to_csv(results: List[Dict], out_path=''):
 
 # ========= CLI =========
 if __name__ == "__main__":
-    csv_name = '0202 Applied Economics.csv'
-    out = process_csv_in_batches(f"../data/processed_data/{csv_name}", batch_size=DEFAULT_CSV_BATCH_SIZE)
-    save_results_to_csv(out, f"../data/result_data/{csv_name}")
+    csv_name = '0101 Philosophy.csv'
+    out = process_csv_in_batches(f"data/crossref_data/{csv_name}", batch_size=DEFAULT_CSV_BATCH_SIZE)
+    save_results_to_csv(out, f"data/subject_data/{csv_name}")
     # 打印前几条示例
     for r in out[:10]:
         print(json.dumps(r, ensure_ascii=False, indent=2))

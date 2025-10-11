@@ -12,7 +12,7 @@ from typing import List
 
 
 class CrossrefMetaProcessor:
-    def __init__(self, input_dir: str, output_dir: str = "../processed_data"):
+    def __init__(self, input_dir: str, output_dir: str = "../02crossref_data"):
         self.input_dir = input_dir
         self.output_dir = output_dir
         self.df_raw = None
@@ -171,6 +171,6 @@ class CrossrefMetaProcessor:
 
 
 if __name__ == "__main__":
-    processor = CrossrefMetaProcessor("../meta_data/0202 Applied Economics")  # 输入目录
+    processor = CrossrefMetaProcessor("../01meta_data/0202 Applied Economics")  # 输入目录
     processor.merge_metadata_with_crossref()
     processor.print_statistics()
