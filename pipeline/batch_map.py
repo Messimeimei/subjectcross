@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 异步并发映射（async 版）：
-- 读取 data/03subject_data/{csv_name}（或批量扫描整个目录）
+- 读取 data/04subject_data/{csv_name}（或批量扫描整个目录）
 - 异步调用 Qwen（DashScope 兼容 API）：
   7要素抽取 + 要素学科关联 + 主/交叉学科 + 交叉等级
 - 将 JSON 写入 elements_crossmap_json
-- 保存到 data/04map_data/{csv_name}
+- 保存到 data/05map_data/{csv_name}
 
 优化：
 - asyncio + AsyncOpenAI（DashScope 兼容）
@@ -40,8 +40,8 @@ print(f"📂 当前工作目录：{os.getcwd()}")
 
 load_dotenv()
 
-SUBJECT_DIR = BASE_DIR / "data" / "03subject_data"
-OUTPUT_DIR  = BASE_DIR / "data" / "04map_data"
+SUBJECT_DIR = BASE_DIR / "data" / "04subject_data"
+OUTPUT_DIR  = BASE_DIR / "data" / "05map_data"
 PROMPT_PATH = BASE_DIR / "data" / "prompts" / "research_elements_and_crossdiscipline_v2.txt"
 CACHE_DIR   = BASE_DIR / "data" / "cache" / "map_api"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

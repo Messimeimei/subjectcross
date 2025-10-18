@@ -1,6 +1,6 @@
 # direction2discipline.py
 # 功能：
-# 1) 读取 ../data/zh_disciplines_with_code.csv（117 个一级学科清单）。
+# 1) 读取 ../data/zh_disciplines.csv（117 个一级学科清单）。
 # 2) 输入方向字符串 (如 "1001 Basic Medicine; 1002 Clinical Medicine; 0710 Biology")，
 #    提取前面的学科代码，匹配到中文清单。
 # 3) 返回 117 学科分数字典 {代码+中文: 分数}，命中的均分，其余为 0。
@@ -52,10 +52,11 @@ class Direction2Discipline:
 
 # ========= 使用示例 =========
 if __name__ == "__main__":
-    disc_file = "../data/zh_disciplines_with_code.csv"
+    disc_file = "../data/zh_disciplines.csv"
     d2d = Direction2Discipline(disc_file)
 
     test_str = "1001 Basic Medicine; 1002 Clinical Medicine; 0710 Biology"
     result = d2d.direction_to_scores(test_str)
+    print(len(result))
 
     print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -12,6 +12,7 @@ from typing import List, Tuple, Dict
 from collections import defaultdict
 import numpy as np
 import pandas as pd
+import torch
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 
@@ -20,8 +21,8 @@ load_dotenv()
 # ========= 环境变量 =========
 # 统一替换
 EMB_MODEL_NAME = os.getenv("EMB_MODEL_NAME", "models/bge-m3")
-CSV_PATH = os.getenv("CSV_PATH", "../data/zh_disciplines_with_code.csv")
-JSON_PATH = os.getenv("JSON_PATH", "../data/zh_discipline_intro_with_code.json")
+CSV_PATH = os.getenv("CSV_PATH", "../data/zh_disciplines.csv")
+JSON_PATH = os.getenv("JSON_PATH", "../data/zh_discipline_intro.json")
 CACHE_DIR = os.getenv("CACHE_DIR", "../models/bge-m3/.cache_embeddings")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -90,6 +91,11 @@ class VectorDisciplineScorer:
                 self.model = self.model.half()
             except Exception:
                 pass
+        # ✅ 初始化后清空缓存 + 显存信息
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+            mem = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+            print(f"✅ 模型加载完成")
 
     # ---------- 学科库 ----------
     def load_disciplines(self, csv_path=CSV_PATH, json_path=JSON_PATH):
@@ -111,11 +117,53 @@ class VectorDisciplineScorer:
         return rows
 
     def embed_texts(self, texts: List[str], batch_size=BATCH_SIZE) -> np.ndarray:
-        vecs = self.model.encode(
-            texts, batch_size=batch_size, show_progress_bar=False,
-            normalize_embeddings=True, convert_to_numpy=True
-        )
-        return np.asarray(vecs, dtype="float32")
+        """安全批量向量化：自动降批 + OOM回退CPU"""
+        import gc, time
+
+        results = []
+        cur_bs = min(batch_size, 64)  # 初始最大 64
+        for start in range(0, len(texts), cur_bs):
+            sub_texts = texts[start:start + cur_bs]
+            for _ in range(3):  # 最多重试3次
+                try:
+                    vecs = self.model.encode(
+                        sub_texts,
+                        batch_size=cur_bs,
+                        show_progress_bar=False,
+                        normalize_embeddings=True,
+                        convert_to_numpy=True,
+                        device=self.device
+                    )
+                    results.append(vecs)
+                    break  # 成功则跳出重试
+                except torch.cuda.OutOfMemoryError:
+                    print(f"⚠️ GPU显存不足（batch={cur_bs}），自动减半重试...")
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    cur_bs = max(1, cur_bs // 2)
+                    time.sleep(1)
+                except Exception as e:
+                    print(f"❌ 向量化出错: {e}")
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    time.sleep(1)
+                    # 降级到 CPU
+                    print("⚠️ 切换到 CPU 模式继续编码...")
+                    vecs = self.model.encode(
+                        sub_texts,
+                        batch_size=max(1, cur_bs // 2),
+                        show_progress_bar=False,
+                        normalize_embeddings=True,
+                        convert_to_numpy=True,
+                        device="cpu"
+                    )
+                    results.append(vecs)
+                    break
+            torch.cuda.empty_cache()
+            gc.collect()
+
+        out = np.vstack(results).astype("float32")
+        return out
 
     def ensure_cache(self, cache_file: str, code2name, code2intro, force_rebuild=False):
         if os.path.exists(cache_file) and not force_rebuild:

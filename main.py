@@ -6,6 +6,7 @@
 2. 对每个学科目录调用CrossrefMetaProcessor处理元数据
 3. 对处理后的CSV文件调用batch_csv_runner进行学科分类
 4. 智能跳过已处理的文件
+5. ✅ 新增阶段 getref：从02crossref_data读取CSV，为参考文献生成OpenAlex学科映射并输出到03openalex_data
 """
 
 import os
@@ -20,8 +21,16 @@ os.chdir(BASE_DIR)
 current_dir = Path(__file__).parent
 sys.path.append(str(current_dir))
 
-from data.scripts.get_by_crossref import CrossrefMetaProcessor
+from data.scripts.get_by_crossref_openalex import CrossrefMetaProcessor
 from pipeline.batch_score import process_csv_in_batches, save_results_to_csv
+
+# ✅ 新增：参考文献OpenAlex映射阶段所需类
+# 需要你在 data/scripts/ref_openalex_mapper.py 中提供 RefOpenAlexMapper
+try:
+    from data.scripts.get_ref_openalex import RefOpenAlexMapper
+except Exception as e:
+    # 如果没有这个文件，会在运行到 getref 阶段时报错并提示
+    RefOpenAlexMapper = None
 
 
 def get_all_subdirectories(root_dir: str) -> list:
@@ -72,23 +81,36 @@ def needs_processing(dir_name: str, processed_dir: str, result_dir: str) -> tupl
     return True, True
 
 
-def process_single_directory(input_dir: str, base_output_dir: str = "data/02crossref_data") -> str:
-    """处理单个目录：获取Crossref元数据并保存为CSV"""
+def process_single_directory(input_dir: str, base_output_dir: str = "data/02crossref_data", limit: int = 500) -> str:
+    """
+    使用新版并发 Crossref + OpenAlex 抓取：
+    - 读取 input_dir 下的所有 CSV，清洗去重 DOI
+    - 并发请求 Crossref 与 OpenAlex
+    - 仅保留有摘要的记录，并按 limit 截断
+    - 输出到 base_output_dir/<学科目录名>.csv
+    """
     dir_name = os.path.basename(input_dir)
-    print(f"🔍 正在处理Crossref元数据: {dir_name}")
+    print(f"🔍 正在处理Crossref/OpenAlex元数据: {dir_name}")
 
     try:
-        processor = CrossrefMetaProcessor(input_dir, base_output_dir)
-        output_file = processor.merge_metadata_with_crossref()
+        # 直接使用你提供的新实现（已包含并发抓取与主题解析）
+        processor = CrossrefMetaProcessor(
+            input_dir=input_dir,
+            output_dir=base_output_dir,
+        )
+        output_file = processor.merge_metadata_with_crossref(limit=limit)
         processor.print_statistics()
-        print(f"✅ Crossref处理完成: {dir_name}")
+        print(f"✅ Crossref/OpenAlex 处理完成: {dir_name}")
         return output_file
+
     except Exception as e:
-        print(f"❌ Crossref处理目录 {dir_name} 时出错: {e}")
+        import traceback
+        print(f"❌ Crossref/OpenAlex 处理目录 {dir_name} 时出错: {e}")
+        traceback.print_exc()
         return None
 
 
-def process_single_classification(csv_file: str, result_base_dir: str = "data/03subject_data") -> str:
+def process_single_classification(csv_file: str, result_base_dir: str = "data/04subject_data") -> str:
     """对单个CSV文件进行学科分类 - 按指定格式输出"""
     import json
     from pipeline.batch_score import DEFAULT_CSV_BATCH_SIZE
@@ -111,9 +133,8 @@ def process_single_classification(csv_file: str, result_base_dir: str = "data/03
         return None
 
 
-
 def batch_process_directories(root_dir: str, processed_base_dir: str = "data/02crossref_data",
-                              result_base_dir: str = "data/03subject_data") -> dict:
+                              result_base_dir: str = "data/04subject_data") -> dict:
     """
     批量处理所有目录，智能跳过已处理的文件
     返回处理统计信息
@@ -202,12 +223,13 @@ def check_environment():
     required_dirs = [
         "data/01meta_data",
         "data/02crossref_data",
-        "data/03subject_data"
+        "data/03openalex_data",   # ✅ 新增：第二阶段输出目录
+        "data/04subject_data"
     ]
 
     required_files = [
-        "data/zh_disciplines_with_code.csv",
-        "data/zh_discipline_intro_with_code.json"
+        "data/zh_disciplines.csv",
+        "data/zh_discipline_intro.json"
     ]
 
     print("🔍 检查环境配置...")
@@ -285,52 +307,128 @@ def print_final_statistics(stats: dict, result_dir: str):
     print(f"📄 总论文记录数: {total_records} 条")
 
 
-def main():
-    """主函数"""
-    # 配置路径 - 根据你的实际目录结构调整
-    ROOT_DIR = "data/01meta_data"  # 包含多个学科目录的根目录
-    PROCESSED_DIR = "data/02crossref_data"  # Crossref处理结果目录
-    RESULT_DIR = "data/03subject_data"  # 最终学科分类结果目录
+def main(mode: str = "all"):
+    """
+    主函数入口
+    mode 参数控制执行阶段：
+        - "getmeta" : 仅执行 Crossref 元数据获取（原阶段 1）
+        - "getref"  : 仅执行 参考文献 OpenAlex 学科映射（✅ 新阶段 2）
+        - "classify": 仅执行 学科分类计算（原阶段 2 → 现阶段 3）
+        - "all"     : 依次执行 getmeta → getref → classify（完整流程）
+    """
+    ROOT_DIR = "data/01meta_data"
+    PROCESSED_DIR = "data/02crossref_data"
+    OPENALEX_REF_DIR = "data/03openalex_data"   # ✅ 新增阶段输出
+    RESULT_DIR = "data/04subject_data"
 
-    print("🚀 开始批量处理学科数据...")
+    print("🚀 学科批处理程序启动")
+    print("=" * 60)
+    print(f"运行模式: {mode}")
     print("=" * 60)
 
-    # 检查环境
+    # 环境检查
     if not check_environment():
         print("💥 环境检查失败，请确保所有必要文件和目录存在")
         return 1
 
-    # 检查是否有学科目录需要处理
+    # 获取所有学科目录（阶段 1 用）
     subdirs = get_all_subdirectories(ROOT_DIR)
     if not subdirs:
         print("❌ 没有找到任何学科目录，请检查 data/01meta_data 目录")
-        return 1
-
-    print(f"\n📚 找到 {len(subdirs)} 个学科目录:")
-    for subdir in subdirs:
-        print(f"   - {os.path.basename(subdir)}")
-
-    try:
-        # 批量处理所有目录
-        stats = batch_process_directories(ROOT_DIR, PROCESSED_DIR, RESULT_DIR)
-
-        # 打印最终统计
-        print_final_statistics(stats, RESULT_DIR)
-
-        # 检查是否有错误
-        if stats['crossref_errors'] > 0 or stats['classification_errors'] > 0:
-            print(f"\n⚠️  注意：处理过程中发生了 {stats['crossref_errors'] + stats['classification_errors']} 个错误")
+        # 注意：getref 与 classify 阶段不依赖 01 目录，允许继续执行
+        if mode == "getmeta" or mode == "all":
             return 1
-        else:
-            print(f"\n🎉 所有处理完成！")
-            return 0
 
-    except Exception as e:
-        print(f"💥 程序执行出错: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
+    # -----------------------
+    # 阶段 1：Crossref 元数据获取（保持不变）
+    # -----------------------
+    if mode in ("getmeta", "all"):
+        print("\n🧩 阶段 1：获取 Crossref 元数据")
+        print("-" * 60)
+        for i, subdir in enumerate(subdirs, 1):
+            dir_name = os.path.basename(subdir)
+            expected_csv = os.path.join(PROCESSED_DIR, f"{dir_name}.csv")
+
+            print(f"\n[{i}/{len(subdirs)}] {dir_name} ...")
+
+            if os.path.exists(expected_csv):
+                print("   ⏭️ 已存在，跳过")
+                continue
+
+            process_single_directory(subdir, PROCESSED_DIR)
+
+    # -----------------------
+    # ✅ 阶段 2：参考文献 OpenAlex 学科映射（新增）
+    # -----------------------
+    if mode in ("getref", "all"):
+        if RefOpenAlexMapper is None:
+            print("❌ 未找到 RefOpenAlexMapper。请确保存在 data/scripts/ref_openalex_mapper.py 并包含 RefOpenAlexMapper 类。")
+            return 1
+
+        print("\n📚 阶段 2：参考文献 OpenAlex 学科映射")
+        print("-" * 60)
+        processed_files = sorted(get_existing_files(PROCESSED_DIR))
+        if not processed_files:
+            print("⚠️ 未在 data/02crossref_data 下发现待处理的CSV。")
+        for i, csv_name in enumerate(processed_files, 1):
+            input_csv = os.path.join(PROCESSED_DIR, csv_name)
+            output_csv = os.path.join(OPENALEX_REF_DIR, csv_name)
+
+            print(f"\n[{i}/{len(processed_files)}] {csv_name} ...")
+            if os.path.exists(output_csv):
+                print("   ⏭️ 已存在，跳过")
+                continue
+
+            try:
+                mapper = RefOpenAlexMapper(input_csv, output_dir=OPENALEX_REF_DIR)
+                # 这里可按需调整并发/限额
+                mapper.process_ref_openalex(max_ref_per_paper=20, max_workers=10)
+                mapper.print_statistics()
+                print(f"   ✅ 参考文献映射完成")
+            except Exception as e:
+                import traceback
+                print(f"   ❌ 参考文献映射失败：{e}")
+                traceback.print_exc()
+
+    # -----------------------
+    # 阶段 3：学科分类计算（由原来的阶段 2 顺延）
+    # -----------------------
+    if mode in ("classify", "all"):
+        print("\n🧠 阶段 3：执行学科分类计算")
+        print("-" * 60)
+        processed_files = sorted(get_existing_files(PROCESSED_DIR))
+        for i, csv_name in enumerate(processed_files, 1):
+            input_csv = os.path.join(PROCESSED_DIR, csv_name)
+            output_csv = os.path.join(RESULT_DIR, csv_name)
+
+            print(f"\n[{i}/{len(processed_files)}] {csv_name} ...")
+
+            if os.path.exists(output_csv):
+                print("   ⏭️ 已存在，跳过")
+                continue
+
+            process_single_classification(input_csv, RESULT_DIR)
+
+    print("\n🎉 所有阶段执行完成！")
+    return 0
 
 
 if __name__ == "__main__":
-    exit(main())
+    import argparse
+
+    parser = argparse.ArgumentParser(description="批量处理学科数据")
+    parser.add_argument(
+        "--mode",
+        choices=["getmeta", "getref", "classify", "all"],  # ✅ 新增 getref
+        default="all",
+        help=(
+            "选择执行阶段: "
+            "getmeta（仅获取论文元数据，不含参考文献）/ "
+            "getref（参考文献OpenAlex学科映射，输出到 data/03openalex_data）/ "
+            "classify（仅计算分数，输出到 data/04subject_data）/ "
+            "all（完整流程，顺序执行 getmeta→getref→classify）"
+        ),
+    )
+    args = parser.parse_args()
+
+    exit(main(mode=args.mode))

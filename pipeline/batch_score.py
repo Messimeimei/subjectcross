@@ -17,6 +17,9 @@ import sys
 import pandas as pd
 from pathlib import Path
 import os
+import gc
+import torch
+
 from lfs.cite2discipline import CitationDisciplineScorer
 from lfs.direction2discipline import Direction2Discipline
 from lfs.vector2discipline import VectorDisciplineScorer, cache_path
@@ -32,13 +35,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 EMB_MODEL_NAME = os.getenv("EMB_MODEL_NAME", str(BASE_DIR / "models/bge-m3"))
-DISC_CSV_PATH  = os.getenv("CSV_PATH", str(BASE_DIR / "data/zh_disciplines_with_code.csv"))
-DISC_JSON_PATH = os.getenv("JSON_PATH", str(BASE_DIR / "data/zh_discipline_intro_with_code.json"))
+DISC_CSV_PATH  = os.getenv("CSV_PATH", str(BASE_DIR / "data/zh_disciplines.csv"))
+DISC_JSON_PATH = os.getenv("JSON_PATH", str(BASE_DIR / "data/zh_discipline_intro.json"))
 CACHE_DIR      = os.getenv("CACHE_DIR", str(BASE_DIR / "models/bge-m3/.cache_embeddings"))
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 # 向量化/检索类参数（vector2discipline 内部会读 env；此处只管 CSV 批处理大小）
-DEFAULT_CSV_BATCH_SIZE = int(os.getenv("CSV_BATCH_SIZE", 64))
+DEFAULT_CSV_BATCH_SIZE = int(os.getenv("BATCH_SIZE", 64))
 
 # 保留学科数
 TOPN = int(os.getenv('TOPN', 3))
@@ -157,10 +160,18 @@ class BatchCSVRunner:
 
         s_affil = [_fill_all(d) for d in
                    self.vec.score_batch(affil_texts, self.codes, self.names, self.emb)]
+        torch.cuda.empty_cache()
+        gc.collect()
+
         s_journal = [_fill_all(d) for d in
                      self.vec.score_batch(journal_texts, self.codes, self.names, self.emb)]
+        torch.cuda.empty_cache()
+        gc.collect()
+
         s_ta = [_fill_all(d) for d in
                 self.vec.score_batch(ta_texts, self.codes, self.names, self.emb)]
+        torch.cuda.empty_cache()
+        gc.collect()
 
         return s_affil, s_journal, s_ta
 
@@ -218,6 +229,9 @@ class BatchCSVRunner:
         if batch_reference_dois is None:
             batch_reference_dois = [[] for _ in range(n)]
         s_cit = self._batch_citation_scores(batch_reference_dois)
+        print(f"机构， 期刊，标题摘要， 研究方向")
+        print(len(s_affil), len(s_journal), len(s_ta), len(s_dir))
+        print(s_affil[0], s_journal[0], s_ta[0], s_dir[0])
 
         fused_list: List[Dict[str, float]] = []
         for i in range(n):
@@ -231,7 +245,7 @@ class BatchCSVRunner:
                 dicts   = [s_affil[i], s_journal[i], s_ta[i], s_dir[i]]
                 weights = [W4_AFFIL,   W4_JOURNAL,   W4_TITLEABS,  W4_DIRECTION]
 
-            # 正规化权重（和 Integrated 一致）
+            # 正规化权重
             total_w = sum(weights)
             for d, w in zip(dicts, weights):
                 if not d or w <= 0:
@@ -343,9 +357,9 @@ def save_results_to_csv(results: List[Dict], out_path=''):
 
 # ========= CLI =========
 if __name__ == "__main__":
-    csv_name = '0101 Philosophy.csv'
-    out = process_csv_in_batches(f"data/crossref_data/{csv_name}", batch_size=DEFAULT_CSV_BATCH_SIZE)
-    save_results_to_csv(out, f"data/subject_data/{csv_name}")
+    csv_name = '0825 Aerospace Science and Technology.csv'
+    out = process_csv_in_batches(f"data/02crossref_data/{csv_name}", batch_size=DEFAULT_CSV_BATCH_SIZE)
+    save_results_to_csv(out, f"data/03subject_data/{csv_name}")
     # 打印前几条示例
     for r in out[:10]:
         print(json.dumps(r, ensure_ascii=False, indent=2))

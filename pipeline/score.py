@@ -24,9 +24,9 @@ load_dotenv()
 
 # ========= 环境变量 =========
 EMB_MODEL_NAME = os.getenv("EMB_MODEL_NAME", "../models/bge-m3")
-CSV_PATH = os.getenv("CSV_PATH", "../data/zh_disciplines_with_code.csv")
-JSON_PATH = os.getenv("JSON_PATH", "../data/zh_discipline_intro_with_code.json")
-EN_DISC_FILE = os.getenv("EN_DISC_FILE", "../data/zh_disciplines_with_code.csv")
+CSV_PATH = os.getenv("CSV_PATH", "../data/zh_disciplines.csv")
+JSON_PATH = os.getenv("JSON_PATH", "../data/zh_discipline_intro.json")
+EN_DISC_FILE = os.getenv("EN_DISC_FILE", "../data/zh_disciplines.csv")
 
 
 class IntegratedDisciplineScorer:

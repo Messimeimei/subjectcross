@@ -20,8 +20,8 @@ from lfs.vector2discipline import VectorDisciplineScorer, cache_path
 # ========= 环境变量 =========
 load_dotenv()
 EMB_MODEL_NAME = os.getenv("EMB_MODEL_NAME", "../models/bge-m3")
-CSV_PATH = os.getenv("CSV_PATH", "../data/zh_disciplines_with_code.csv")
-JSON_PATH = os.getenv("JSON_PATH", "../data/zh_discipline_intro_with_code.json")
+CSV_PATH = os.getenv("CSV_PATH", "../data/zh_disciplines.csv")
+JSON_PATH = os.getenv("JSON_PATH", "../data/zh_discipline_intro.json")
 
 
 def strip_tags(text: str) -> str:
