@@ -1,20 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-OpenAlex 学科 → 中国117一级学科 映射脚本（双语 + 缓存检测 + 自动合并）
---------------------------------------------------------
-功能：
-1. 同时读取中英文 OpenAlex 学科列表（无表头）
-2. 分别计算与中国117学科的相似度映射（自动缓存判断）
-3. 若已存在英文/中文映射 JSON 文件，直接跳过计算
-4. 最后自动合并两份结果（英文键，值取并集）
---------------------------------------------------------
-输入：
-    data/fields_all_en.csv
-    data/fields_all_cn.csv
-输出：
-    data/openalex_to_cn_disciplines_en.json
-    data/openalex_to_cn_disciplines_cn.json
-    data/openalex_to_cn_disciplines_merged.json
+OpenAlex Field/Subfield → 中国117一级学科映射类（支持 Embedding / LLM 双模式）
+方案A：LLM批量模式，一次调用返回整张JSON映射表
+-------------------------------------------------------------------
 """
 
 import os
@@ -23,137 +11,144 @@ import json
 import pandas as pd
 from pathlib import Path
 from dotenv import load_dotenv
+from utils.llm_call import call_qwen_rank
+from utils.vector2discipline import VectorDisciplineScorer, cache_path
 
-# ---------- 自动添加项目根目录 ----------
+# ====== 基础路径配置 ======
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
-from lfs.vector2discipline import VectorDisciplineScorer, cache_path
-
-# ---------- 加载 .env ----------
 load_dotenv(ROOT / ".env")
 
-# ===================== 配置区 =====================
-FIELDS_EN = ROOT / "data/fields_all_en.csv"
-FIELDS_CN = ROOT / "data/fields_all_cn.csv"
-
-OUTPUT_EN = ROOT / "data/openalex_to_cn_disciplines_en.json"
-OUTPUT_CN = ROOT / "data/openalex_to_cn_disciplines_cn.json"
-OUTPUT_MERGED = ROOT / "data/openalex_to_cn_disciplines_merged.json"
-
-TOPN = int(os.getenv("TOPN", 5))
-
+# ====== 默认路径 ======
 CSV_PATH = ROOT / os.getenv("CSV_PATH", "data/zh_disciplines.csv")
 JSON_PATH = ROOT / os.getenv("JSON_PATH", "data/zh_discipline_intro.json")
 EMB_MODEL_NAME = os.getenv("EMB_MODEL_NAME", "models/bge-m3")
-CACHE_DIR = ROOT / os.getenv("CACHE_DIR", "models/bge-m3/.cache_embeddings")
+
+FIELDS_EN = ROOT / "data/openalex_fields_en.csv"
+SUBFIELDS_EN = ROOT / "data/openalex_subfields_en.csv"
+MAP_DIR = ROOT / "data"
+MAP_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# ===================== 工具函数 =====================
-def read_field_list(file_path: Path):
-    """读取学科列表，无表头兼容纯文本"""
+# ========================== 工具函数 ==========================
+def read_list(file_path: Path):
+    """读取一列 csv 或 txt 文件"""
     if not file_path.exists():
         raise FileNotFoundError(file_path)
     try:
-        df = pd.read_csv(file_path)
-        if "field_name" in df.columns:
-            return df["field_name"].dropna().astype(str).tolist()
-        else:
-            return df.iloc[:, 0].dropna().astype(str).tolist()
+        df = pd.read_csv(file_path, header=None)
+        return df.iloc[:, 0].dropna().astype(str).tolist()
     except Exception:
         with open(file_path, "r", encoding="utf-8") as f:
-            return [line.strip().strip('"') for line in f if line.strip()]
+            return [line.strip() for line in f if line.strip()]
 
 
-def compute_mapping(field_list, scorer, codes, names, emb, topn=TOPN):
-    """批量计算映射"""
-    batch_scores = scorer.score_batch(field_list, codes, names, emb)
-    result = {}
-    for field, score_dict in zip(field_list, batch_scores):
-        sorted_disc = sorted(score_dict.items(), key=lambda x: x[1], reverse=True)[:topn]
-        result[field] = [code_name for code_name, _ in sorted_disc]
-    return result
+def save_json(data, path: Path):
+    """保存 JSON 文件"""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"💾 已保存: {path} ({len(data)} 条)")
 
 
-def merge_results(en_data, cn_data):
-    """按行顺序合并两份结果（键保留英文，值取并集）"""
-    merged = {}
-    en_keys = list(en_data.keys())
-    cn_vals_list = list(cn_data.values())
+# ========================== 主类 ==========================
+class OpenAlexMapper:
+    def __init__(self, csv_path=CSV_PATH, json_path=JSON_PATH, emb_model=EMB_MODEL_NAME):
+        self.csv_path = csv_path
+        self.json_path = json_path
+        self.emb_model = emb_model
+        self.scorer = None
+        self.emb_cache = None
+        print("✅ 初始化 OpenAlexMapper 完成。")
 
-    for i, key in enumerate(en_keys):
-        en_vals = en_data.get(key, [])
-        cn_vals = cn_vals_list[i] if i < len(cn_vals_list) else []
-        merged_vals = list(dict.fromkeys(en_vals + cn_vals))
-        merged[key] = merged_vals
-    return merged
+    # ---------- Embedding 方法 ----------
+    def map_with_embedding(self, field_list, topn=5):
+        """基于向量相似度映射"""
+        if self.scorer is None:
+            print("🧠 加载向量模型与学科缓存 ...")
+            self.scorer = VectorDisciplineScorer()
+            code2name, code2intro = self.scorer.load_disciplines(str(self.csv_path), str(self.json_path))
+            cpath = cache_path(self.emb_model, str(self.csv_path), str(self.json_path))
+            emb, codes, names, texts = self.scorer.ensure_cache(cpath, code2name, code2intro)
+            self.emb_cache = (emb, codes, names, texts)
+        emb, codes, names, texts = self.emb_cache
+
+        print(f"⚙️ 开始计算 Embedding 相似度 (Top{topn}) ...")
+        batch_scores = self.scorer.score_batch(field_list, codes, names, emb)
+        result = {}
+        for field, score_dict in zip(field_list, batch_scores):
+            sorted_disc = sorted(score_dict.items(), key=lambda x: x[1], reverse=True)[:topn]
+            result[field] = [(f"{k}", float(v)) for k, v in sorted_disc]
+        return result
+
+    # ---------- LLM 批量方法 ----------
+    def map_with_llm_batch(self, fields_en, subfields_en, all_disciplines, disc_intro_json, top_field=5, top_subfield=2):
+        """
+        使用 Qwen (discipline_map) 模型，一次性批量输入全部 OpenAlex fields+subfields，
+        输出完整 JSON 映射表。
+        """
+        print(f"🧠 调用 Qwen discipline_map 模式：Fields={len(fields_en)}, Subfields={len(subfields_en)}")
+
+        mapped = call_qwen_rank(
+            text_block="",                     # 模板中不需要 text_block
+            disciplines_json=all_disciplines,  # 中国117学科列表
+            disciplines_intro_json=disc_intro_json,
+            fields_en_list=fields_en,          # 填充 {{FIELDS_EN_LIST}}
+            subfields_en_list=subfields_en,    # 填充 {{SUBFIELDS_EN_LIST}}
+            topn_field=top_field,              # 填充 {{TOPN_FIELD}}
+            topn_subfield=top_subfield,        # 填充 {{TOPN_SUBFIELD}}
+            mode="discipline_map",
+            max_retries=3
+        )
+
+        if isinstance(mapped, dict):
+            print(f"✅ Qwen 批量映射完成，共 {len(mapped)} 条记录。")
+            return mapped
+        else:
+            print("⚠️ Qwen 未返回 JSON 对象，结果为空。")
+            return {}
+
+    # ---------- 统一运行接口 ----------
+    def run(self, mode="embedding", top_field=5, top_subfield=2):
+        """运行 Embedding 或 LLM 模式"""
+        print(f"🚀 模式：{mode.upper()} 开始运行 ...")
+
+        all_disciplines = read_list(self.csv_path)
+        field_en = read_list(FIELDS_EN)
+        subfield_en = read_list(SUBFIELDS_EN)
+
+        if mode == "embedding":
+            map_field = self.map_with_embedding(field_en, top_field)
+            map_subfield = self.map_with_embedding(subfield_en, top_subfield)
+
+            prefix = f"{mode}_openalex_to_cn"
+            save_json(map_field, MAP_DIR / f"{prefix}_field_en.json")
+            save_json(map_subfield, MAP_DIR / f"{prefix}_subfield_en.json")
+
+            merged = {**map_field, **map_subfield}
+            save_json(merged, MAP_DIR / f"{prefix}_merged.json")
+            print(f"🎉 Embedding 模式完成，共 {len(merged)} 条记录。")
+
+        elif mode == "llm":
+            # 大模型不使用学科介绍
+            disc_intro = {}
+
+            merged = self.map_with_llm_batch(field_en, subfield_en, all_disciplines, disc_intro, top_field, top_subfield)
+            save_json(merged, MAP_DIR / "llm_openalex_to_cn_merged.json")
+            print(f"🎯 LLM 批量模式完成，共 {len(merged)} 条记录。")
+
+        else:
+            raise ValueError("mode 必须是 'embedding' 或 'llm'")
 
 
-# ===================== 主函数 =====================
-def main():
-    print("📦 检查已有映射文件 ...")
-    en_exists = OUTPUT_EN.exists()
-    cn_exists = OUTPUT_CN.exists()
-
-    # ---------- 若两者都存在，仅合并 ----------
-    if en_exists and cn_exists:
-        print("✅ 检测到中英文结果已存在，直接执行合并。")
-        with open(OUTPUT_EN, "r", encoding="utf-8") as f:
-            en_result = json.load(f)
-        with open(OUTPUT_CN, "r", encoding="utf-8") as f:
-            cn_result = json.load(f)
-        merged = merge_results(en_result, cn_result)
-        with open(OUTPUT_MERGED, "w", encoding="utf-8") as f:
-            json.dump(merged, f, ensure_ascii=False, indent=2)
-        print(f"🎉 合并完成，共 {len(merged)} 条，结果已保存至：{OUTPUT_MERGED}")
-        return
-
-    # ---------- 加载模型与117学科 ----------
-    print("🚀 正在加载 VectorDisciplineScorer ...")
-    scorer = VectorDisciplineScorer()
-    print("📘 加载117学科信息 ...")
-    code2name, code2intro = scorer.load_disciplines(str(CSV_PATH), str(JSON_PATH))
-    print("💾 构建或加载嵌入缓存 ...")
-    cpath = cache_path(EMB_MODEL_NAME, str(CSV_PATH), str(JSON_PATH))
-    emb, codes, names, texts = scorer.ensure_cache(cpath, code2name, code2intro)
-
-    # ---------- 英文 ----------
-    if not en_exists:
-        en_fields = read_field_list(FIELDS_EN)
-        print(f"🧠 正在计算英文字段映射，共 {len(en_fields)} 条 ...")
-        en_result = compute_mapping(en_fields, scorer, codes, names, emb)
-        OUTPUT_EN.parent.mkdir(parents=True, exist_ok=True)
-        with open(OUTPUT_EN, "w", encoding="utf-8") as f:
-            json.dump(en_result, f, ensure_ascii=False, indent=2)
-        print(f"✅ 英文映射完成：{OUTPUT_EN}")
-    else:
-        with open(OUTPUT_EN, "r", encoding="utf-8") as f:
-            en_result = json.load(f)
-        print("⚙️ 已检测到英文结果文件，跳过计算。")
-
-    # ---------- 中文 ----------
-    if not cn_exists:
-        cn_fields = read_field_list(FIELDS_CN)
-        print(f"🧠 正在计算中文字段映射，共 {len(cn_fields)} 条 ...")
-        cn_result = compute_mapping(cn_fields, scorer, codes, names, emb)
-        with open(OUTPUT_CN, "w", encoding="utf-8") as f:
-            json.dump(cn_result, f, ensure_ascii=False, indent=2)
-        print(f"✅ 中文映射完成：{OUTPUT_CN}")
-    else:
-        with open(OUTPUT_CN, "r", encoding="utf-8") as f:
-            cn_result = json.load(f)
-        print("⚙️ 已检测到中文结果文件，跳过计算。")
-
-    # ---------- 合并 ----------
-    print("🔗 正在合并中英文结果 ...")
-    merged = merge_results(en_result, cn_result)
-    with open(OUTPUT_MERGED, "w", encoding="utf-8") as f:
-        json.dump(merged, f, ensure_ascii=False, indent=2)
-    print(f"🎉 合并完成，共 {len(merged)} 条，结果已保存至：{OUTPUT_MERGED}")
-
-
-# ===================== 主入口 =====================
+# ========================== 主程序入口 ==========================
 if __name__ == "__main__":
-    main()
+    mapper = OpenAlexMapper()
+
+    # 运行词向量模式
+    # mapper.run(mode='embedding', top_field=5, top_subfield=2)
+
+    # 运行 LLM 批量模式
+    mapper.run(mode="llm", top_field=5, top_subfield=2)
