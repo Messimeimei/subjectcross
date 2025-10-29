@@ -63,3 +63,4 @@ Thumbs.db
 
 # ==== 数据缓存文件 ====
 /data/cache/
+/cache
