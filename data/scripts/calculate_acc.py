@@ -29,6 +29,7 @@ def align_predicted_with_test(test_data_file, predicted_data_file):
     print(f"✅ 已对齐 predicted_result.csv，共保留 {len(aligned_pred_df)} 条记录")
     return test_df, aligned_pred_df
 
+
 def mark_wrong_predictions(test_data, predicted_data, output_dir="data"):
     """
     标记预测错误的论文：
@@ -67,10 +68,28 @@ def mark_wrong_predictions(test_data, predicted_data, output_dir="data"):
         test_all_labels = set(test_primary + test_cross)
         predicted_cross_set = set(predicted_cross)
 
-        correct_cross = len(predicted_cross_set & test_all_labels)
-        cross_acc = correct_cross / len(predicted_cross_set) if predicted_cross_set else 0
-        cross_rec = correct_cross / len(test_all_labels) if test_all_labels else 0
-        f1_score = (2 * cross_acc * cross_rec) / (cross_acc + cross_rec) if cross_acc + cross_rec else 0
+        # 处理测试交叉学科为空的情况
+        if not test_cross and not predicted_cross_set:
+            # 如果测试交叉学科为空，预测的也为空，则准确率、召回率、F1都为满分
+            cross_acc = 1.0
+            cross_rec = 1.0
+            f1_score = 1.0
+        elif not test_cross and predicted_cross_set:
+            # 如果测试交叉学科为空，但预测的不为空，则准确率为0，召回率为1，F1为0
+            cross_acc = 0.0
+            cross_rec = 1.0
+            f1_score = 0.0
+        elif test_cross and not predicted_cross_set:
+            # 如果测试交叉学科不为空，但预测的为空，则准确率为1，召回率为0，F1为0
+            cross_acc = 1.0
+            cross_rec = 0.0
+            f1_score = 0.0
+        else:
+            # 正常情况：两者都不为空
+            correct_cross = len(predicted_cross_set & test_all_labels)
+            cross_acc = correct_cross / len(predicted_cross_set) if predicted_cross_set else 0
+            cross_rec = correct_cross / len(test_all_labels) if test_all_labels else 0
+            f1_score = (2 * cross_acc * cross_rec) / (cross_acc + cross_rec) if cross_acc + cross_rec else 0
 
         # --- 错误标记 ---
         mark_labels = []
@@ -139,9 +158,6 @@ def calculate_accuracy(test_data_file, predicted_data_file, output_dir="data"):
 
     primary_correct_count = 0
     total_primary_count = len(test_data)
-    total_predicted_cross_count = 0
-    total_label_cross_count = 0
-    total_correct_cross = 0
 
     primary_correct_list, cross_accuracy_list, cross_recall_list, f1_score_list = [], [], [], []
 
@@ -160,18 +176,34 @@ def calculate_accuracy(test_data_file, predicted_data_file, output_dir="data"):
         primary_score = 1 if any(item in test_primary for item in predicted_primary) else 0
         primary_correct_count += primary_score
 
-        # === 新的交叉学科准确率 / 召回率 ===
+        # === 修改后的交叉学科准确率 / 召回率计算 ===
         test_all_labels = set(test_primary + test_cross)
         predicted_cross_set = set(predicted_cross)
 
-        correct_cross = len(predicted_cross_set & test_all_labels)
-        cross_accuracy = correct_cross / len(predicted_cross_set) if predicted_cross_set else 0
-        cross_recall = correct_cross / len(test_all_labels) if test_all_labels else 0
-        f1_score = (2 * cross_accuracy * cross_recall) / (cross_accuracy + cross_recall) if cross_accuracy + cross_recall else 0
+        # 处理测试交叉学科为空的情况
+        if not test_cross and not predicted_cross_set:
+            # 如果测试交叉学科为空，预测的也为空，则准确率、召回率、F1都为满分
+            cross_accuracy = 1.0
+            cross_recall = 1.0
+            f1_score = 1.0
+        elif not test_cross and predicted_cross_set:
+            # 如果测试交叉学科为空，但预测的不为空，则准确率为0，召回率为1，F1为0
+            cross_accuracy = 0.0
+            cross_recall = 1.0
+            f1_score = 0.0
+        elif test_cross and not predicted_cross_set:
+            # 如果测试交叉学科不为空，但预测的为空，则准确率为1，召回率为0，F1为0
+            cross_accuracy = 1.0
+            cross_recall = 0.0
+            f1_score = 0.0
+        else:
+            # 正常情况：两者都不为空
+            correct_cross = len(predicted_cross_set & test_all_labels)
+            cross_accuracy = correct_cross / len(predicted_cross_set) if predicted_cross_set else 0
+            cross_recall = correct_cross / len(test_all_labels) if test_all_labels else 0
+            f1_score = (2 * cross_accuracy * cross_recall) / (
+                        cross_accuracy + cross_recall) if cross_accuracy + cross_recall else 0
 
-        total_correct_cross += correct_cross
-        total_predicted_cross_count += len(predicted_cross_set)
-        total_label_cross_count += len(test_all_labels)
         primary_correct_list.append(primary_score)
         cross_accuracy_list.append(cross_accuracy)
         cross_recall_list.append(cross_recall)
@@ -185,11 +217,11 @@ def calculate_accuracy(test_data_file, predicted_data_file, output_dir="data"):
         print(f"  🔍 预测交叉学科: {predicted_cross}")
         print(f"     ↳ 准确率={cross_accuracy:.3f}  召回率={cross_recall:.3f}  F1={f1_score:.3f}")
 
-    # === 汇总统计 ===
+    # === 汇总统计 - 使用平均值 ===
     primary_accuracy = primary_correct_count / total_primary_count if total_primary_count else 0
-    cross_accuracy = total_correct_cross / total_predicted_cross_count if total_predicted_cross_count else 0
-    cross_recall = total_correct_cross / total_label_cross_count if total_label_cross_count else 0
-    cross_f1 = (2 * cross_accuracy * cross_recall) / (cross_accuracy + cross_recall) if cross_accuracy + cross_recall else 0
+    cross_accuracy = np.mean(cross_accuracy_list) if cross_accuracy_list else 0
+    cross_recall = np.mean(cross_recall_list) if cross_recall_list else 0
+    cross_f1 = np.mean(f1_score_list) if f1_score_list else 0
 
     print("\n📈 ======= 总体指标汇总 =======")
     print(f"主学科准确率: {primary_accuracy:.4f}")
@@ -211,7 +243,8 @@ def plot_accuracy(primary_correct_list, cross_accuracy_list, cross_recall_list, 
     plt.xlabel("Match Status")
     plt.ylabel("Count")
     for patch in patches:
-        plt.text(patch.get_x() + patch.get_width() / 2, patch.get_height() + 0.1, f'{int(patch.get_height())}', ha='center')
+        plt.text(patch.get_x() + patch.get_width() / 2, patch.get_height() + 0.1, f'{int(patch.get_height())}',
+                 ha='center')
 
     for i, (title, data, color) in enumerate(
             [("Cross Discipline Accuracy", cross_accuracy_list, "salmon"),
@@ -225,7 +258,8 @@ def plot_accuracy(primary_correct_list, cross_accuracy_list, cross_recall_list, 
         plt.xlabel(title.split()[-1])
         plt.ylabel("Count")
         for patch in patches:
-            plt.text(patch.get_x() + patch.get_width() / 2, patch.get_height() + 0.1, f'{int(patch.get_height())}', ha='center')
+            plt.text(patch.get_x() + patch.get_width() / 2, patch.get_height() + 0.1, f'{int(patch.get_height())}',
+                     ha='center')
 
     plt.tight_layout()
     plt.show()
@@ -238,7 +272,8 @@ def main():
     predicted_data_file = os.path.join(output_data_dir, "predicted_result.csv")
 
     print("开始执行预测结果生成...")
-    refrank_with_llm_and_stub_result(input_dir=input_data_dir, output_dir=output_data_dir)
+    refrank_with_llm_and_stub_result(input_dir=input_data_dir, output_dir=output_data_dir,
+                                     file_path='../../data/04input_data/1205 Library and Information Science & Archive Management.csv')
 
     print("开始对齐 predicted_result.csv 与 test_data.csv ...")
     test_data, aligned_pred_data = align_predicted_with_test(test_data_file, predicted_data_file)
