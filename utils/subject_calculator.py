@@ -369,7 +369,7 @@ class SubjectCalculator:
         # 2️⃣ 混合归一化策略配置
         norm_map = {
             "title_abs": "softmax",
-            "incites": "softmax",
+            "incites": "minmax",
             "refs": "softmax",
             "openalex": "softmax",
             "author": "softmax",

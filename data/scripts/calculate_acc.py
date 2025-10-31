@@ -117,7 +117,7 @@ def mark_wrong_predictions(test_data, predicted_data, output_dir="data"):
     print(f"📊 交叉学科F1=0 (cross_wrong): {wrong_count_cross}")
 
 
-def refrank_with_llm_and_stub_result(input_dir="data/04input_data", output_dir="data/05subject_data", file_path=None):
+def refrank_with_llm_and_stub_result(input_dir="data/04input_data", output_dir="data/05output_data", file_path=None):
     """阶段四：直接计算学科结果（可指定单个文件）"""
     os.makedirs(output_dir, exist_ok=True)
     files = [os.path.basename(file_path)] if file_path else sorted(

@@ -97,7 +97,7 @@ def batch_make_all_inputs(openalex_dir="data/03openalex_data",
 
 def refrank_with_llm_and_stub_result(
     input_dir="data/04input_data",
-    output_dir="data/05subject_data",
+    output_dir="data/05output_data",
     overwrite=False,
     file_path=None,
 ):
@@ -156,7 +156,7 @@ def main(mode="all", file_path=None, dir_path=None):
     ROOT_DIR = "data/01meta_data"
     PROCESSED_DIR = "data/02crossref_data"
     OPENALEX_REF_DIR = "data/03openalex_data"
-    RESULT_DIR = "data/05subject_data"
+    RESULT_DIR = "data/05output_data"
 
     print("=" * 60)
     print(f"🚀 启动批处理程序  | 模式: {mode}")
@@ -206,7 +206,7 @@ def main(mode="all", file_path=None, dir_path=None):
         print("\n🤖 阶段 4：学科计算")
         refrank_with_llm_and_stub_result(
             input_dir="data/04input_data",
-            output_dir="data/05subject_data",
+            output_dir="data/05output_data",
             overwrite=False,
             file_path=file_path,
         )
