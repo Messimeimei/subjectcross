@@ -1,0 +1,30 @@
+# Python 相关
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VSCode 编辑器相关
+.vscode/
+.idea/
+
+# 缓存文件
+.cache/
+cache/
+
+# data 文件夹中相关的
+data/scripts/cache/
+
+# finetune 文件夹中的数据
+finetune/data/
+
+# checkpoints 断点文件
+checkpoints/
+
+# models 只保留模型文件夹名称，不保留里面具体的文件
+models/**
+!models/
+!models/*/
+
+# .env 环境配置文件
+.env

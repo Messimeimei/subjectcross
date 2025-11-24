@@ -1,0 +1,51 @@
+0802 Mechanical Engineering
+0824 Naval Architecture and Ocean Engineering
+0304 Ethnology
+0810 Information and Communication Engineering
+0839 Cyberspace Security
+0821 Textile Science and Engineering
+0828 Agricultural Engineering
+0302 Political Science
+0822 Light Industry Technology and Engineering
+0712 History of Science and Technology
+0813 Architecture
+0101 Philosophy
+0807 Power Engineering and Engineering Thermophysic
+1008 Chinese Materia Medica
+0903 Agricultural Resource and Environment Sciences
+1301 Art Theory
+0401 Education
+0831 Biomedical Engineering
+0827 Nuclear Science and Technology
+0814 Civil Engineering
+1010 Medical Technology
+1005 Chinese Medicine
+0808 Electrical Engineering
+0823 Transportation Engineering
+0835 Software Engineering
+0825 Aerospace Science and Technology
+0818 Geological Resources and Geological Engineering
+0503 Journalism and Communication
+1305 Design
+0836 Biotechnology and Bioengineering
+0301 Law
+0603 World History
+0602 History of China
+0801 Mechanics
+0502 Foreign Language and Literature0502 Foreign Language and Literature
+1205 Library and Information Science & Archive Management
+0816 Surveying and Mapping
+1304 Fine Art
+0809 Electronic Science and Technology|1
+1303 Drama Film and Television|1
+0833 Urban and Rural Planning|1
+0811 Control Science and Engineering|1
+0806 Metallurgical Engineering|1
+1009 Special Medicine|1
+0829 Forestry Engineering|1
+0601 Archaeology|1
+0711 Systems Science|1
+0402 Psychology|1
+0812 Computer Science and Technology|1
+0701 Mathematics|1
+0803 Optical Engineering|1
