@@ -31,10 +31,183 @@ from utils.llm_call import call_qwen_rank
 load_dotenv()
 
 # ========= 环境变量 =========
-EMB_MODEL_NAME = os.getenv("EMB_MODEL_NAME", "../../models/bge-m3")
+EMB_MODEL_NAME = os.getenv("EMB_MODEL_NAME", "../../models/Qwen3-Embedding-0.6B")
 CSV_PATH = os.getenv("CSV_PATH", "../zh_disciplines.csv")
 JSON_PATH = os.getenv("JSON_PATH", "../zh_discipline_intro.json")
 
+# ---------- 单独更新标题+摘要列的内容，直接再04数据集上更新--------
+def update_title_abs_simple_batch(
+    input_dir: str = "data/04input_data",
+    output_dir: str = None,
+    topn: int = 5,
+    use_gpu: bool = True
+):
+    """
+    批量更新04input_data目录下所有CSV文件的标题摘要列
+    1. 删除4个中间字段
+    2. 使用相似度计算更新list_title_abs列
+    
+    :param input_dir: 输入目录路径
+    :param output_dir: 输出目录，None则覆盖原文件
+    :param topn: 返回前N个学科
+    :param use_gpu: 是否使用GPU
+    """
+    
+    ROOT = Path(__file__).resolve().parents[2]
+    input_path = (ROOT / input_dir).resolve()
+    
+    # 查找所有csv文件
+    csv_files = list(input_path.glob("*.csv"))
+    print(f"📁 找到 {len(csv_files)} 个CSV文件")
+    
+    # 只计算相似度的简化版本
+    def calculate_title_abs_simple(df: pd.DataFrame, topn: int = 5, use_gpu: bool = True) -> pd.Series:
+        """
+        标题+摘要学科计算（仅使用相似度计算）
+        返回: pd.Series 包含 [(学科代码, 分数), ...] 的列表
+        """
+        # ========== BGE 模型计算相似度 ==========
+        scorer = VectorDisciplineScorer(use_gpu=use_gpu)
+        code2name, code2intro = scorer.load_disciplines()
+        cpath = cache_path(EMB_MODEL_NAME, CSV_PATH, JSON_PATH)
+        emb, codes, names, texts = scorer.ensure_cache(cpath, code2name, code2intro)
+
+        text_titleabs = (df["论文标题"] + "。 " + df["CR_摘要"]).tolist()
+        res_titleabs = scorer.score_batch(text_titleabs, codes, names, emb)
+
+        list_bge_all = []
+        for r in res_titleabs:
+            topn_sorted = sorted(r.items(), key=lambda x: x[1], reverse=True)[:topn]
+            list_bge_all.append([(k, float(v)) for k, v in topn_sorted])
+            
+        print("✅ 标题摘要相似度计算完成！")
+        return pd.Series(list_bge_all)
+    
+    # 处理每个文件
+    for csv_file in csv_files:
+        print(f"\n{'='*50}")
+        print(f"🔄 处理文件: {csv_file.name}")
+        print(f"{'='*50}")
+        
+        try:
+            # 读取数据
+            df = pd.read_csv(csv_file, dtype=str).fillna("")
+            print(f"📖 读取 {len(df)} 条记录")
+            
+            # 检查必要的列是否存在
+            required_cols = ["论文标题", "CR_摘要"]
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                print(f"⚠️ 跳过 {csv_file.name}，缺少列: {missing_cols}")
+                continue
+            
+            # ========== Step 1: 删除4个中间字段 ==========
+            cols_to_drop = [
+                "list_title_abs_bge",
+                "list_title_abs_qwen", 
+                "list_title_abs_ave",
+                "list_title_abs_merged"
+            ]
+            
+            existing_cols_to_drop = [col for col in cols_to_drop if col in df.columns]
+            if existing_cols_to_drop:
+                df = df.drop(columns=existing_cols_to_drop)
+                print(f"🗑️ 已删除字段: {existing_cols_to_drop}")
+            else:
+                print("ℹ️ 未找到要删除的中间字段")
+            
+            # ========== Step 2: 使用相似度计算更新list_title_abs列 ==========
+            print("🔄 使用相似度计算更新 list_title_abs 列...")
+            df["list_title_abs"] = calculate_title_abs_simple(df, topn=topn, use_gpu=use_gpu)
+            
+            # ========== Step 3: 保存结果 ==========
+            if output_dir:
+                out_path = (ROOT / output_dir / csv_file.name).resolve()
+                os.makedirs(out_path.parent, exist_ok=True)
+                save_path = out_path
+            else:
+                save_path = csv_file  # 覆盖原文件
+            
+            df.to_csv(save_path, index=False, encoding="utf-8-sig")
+            print(f"✅ 已更新 → {save_path}")
+            
+            # 显示更新后的列信息
+            print("📊 更新后的列:")
+            title_abs_cols = [col for col in df.columns if 'title_abs' in col]
+            for col in title_abs_cols:
+                sample_value = df[col].iloc[0] if len(df) > 0 else "空"
+                print(f"   - {col}: {sample_value}")
+            
+        except Exception as e:
+            print(f"❌ 处理文件 {csv_file.name} 时出错: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+    
+    print(f"\n🎉 所有文件处理完成！")
+
+def update_title_abs_simple_single(
+    input_file: str,
+    output_dir: str = None,
+    topn: int = 5,
+    use_gpu: bool = True
+) -> pd.DataFrame:
+    """
+    更新单个文件的标题摘要列
+    """
+    ROOT = Path(__file__).resolve().parents[2]
+    input_path = (ROOT / input_file).resolve()
+    
+    # 读取数据
+    df = pd.read_csv(input_path, dtype=str).fillna("")
+    print(f"📖 读取 {len(df)} 条记录")
+    
+    # 只计算相似度的函数
+    def calculate_title_abs_simple(df: pd.DataFrame, topn: int = 5, use_gpu: bool = True) -> pd.Series:
+        scorer = VectorDisciplineScorer(use_gpu=use_gpu)
+        code2name, code2intro = scorer.load_disciplines()
+        cpath = cache_path(EMB_MODEL_NAME, CSV_PATH, JSON_PATH)
+        emb, codes, names, texts = scorer.ensure_cache(cpath, code2name, code2intro)
+
+        text_titleabs = (df["论文标题"] + "。 " + df["CR_摘要"]).tolist()
+        res_titleabs = scorer.score_batch(text_titleabs, codes, names, emb)
+
+        list_bge_all = []
+        for r in res_titleabs:
+            topn_sorted = sorted(r.items(), key=lambda x: x[1], reverse=True)[:topn]
+            list_bge_all.append([(k, float(v)) for k, v in topn_sorted])
+            
+        return pd.Series(list_bge_all)
+    
+    # 删除4个中间字段
+    cols_to_drop = [
+        "list_title_abs_bge",
+        "list_title_abs_qwen", 
+        "list_title_abs_ave",
+        "list_title_abs_merged"
+    ]
+    
+    existing_cols_to_drop = [col for col in cols_to_drop if col in df.columns]
+    if existing_cols_to_drop:
+        df = df.drop(columns=existing_cols_to_drop)
+        print(f"🗑️ 已删除字段: {existing_cols_to_drop}")
+    
+    # 更新list_title_abs列
+    print("🔄 使用相似度计算更新 list_title_abs 列...")
+    df["list_title_abs"] = calculate_title_abs_simple(df, topn=topn, use_gpu=use_gpu)
+    
+    # 保存结果
+    if output_dir:
+        out_path = (ROOT / output_dir / input_path.name).resolve()
+        os.makedirs(out_path.parent, exist_ok=True)
+        save_path = out_path
+    else:
+        save_path = input_path
+    
+    df.to_csv(save_path, index=False, encoding="utf-8-sig")
+    print(f"✅ 已更新 → {save_path}")
+    
+    return df
 
 # ---------- 研究方向 ----------
 def add_incites_direction_list(df: pd.DataFrame, mapping_csv: str, direction_col: str = "研究方向") -> pd.Series:
@@ -90,7 +263,7 @@ def add_openalex_list(df: pd.DataFrame, col: str = "OpenAlex_map_subjects", topk
         :param col: OpenAlex_map_subjects所在的列名
         :param topk: 最终保留的Openalex映射后的学科数量
 
-        :return 全新的 OpenAlex_map_subjects 列，格式从3维列表变成一维列表
+        :return: 全新的 OpenAlex_map_subjects 列，格式从3维列表变成一维列表
     """
 
     # ========== 第一步：加载新的映射表 ==========
@@ -375,6 +548,152 @@ def add_ref_list(df: pd.DataFrame, ref_col: str = "Ref_OpenAlex_map_subjects", t
 
     return result
 
+# ---------- 作者机构：直接调用 Qwen ----------
+def add_author_aff_qwen(df: pd.DataFrame, topk: int = 5, topn_each: int = 2,
+                        sleep_time: float = 0.4, max_workers: int = 10) -> pd.Series:
+    """
+    对每篇论文的所有作者机构字段并发调用 Qwen 模型：
+    ----------------------------------------------------------
+    - 每个机构名并发调用 Qwen 识别学科（每机构最多 topn_each=2 个）
+    - 自动缓存已识别的机构结果（cache/qwen_author_aff/）
+    - 对所有机构结果求平均后 softmax 归一化，取前 topk 输出
+    ----------------------------------------------------------
+    输出格式：
+    - [('0812 计算机科学与技术', 0.45), ('0835 软件工程', 0.35), ...]
+    ----------------------------------------------------------
+    """
+
+    # 从 CSV 读取学科列表，用于作者机构提示词的构建
+    disciplines = []
+    with open(CSV_PATH, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if len(line) >= 5 and line[:4].isdigit():
+                disciplines.append(line)
+
+    # 缓存路径设置
+    CACHE_DIR = "cache/qwen_author_aff"
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+    def cache_key(text: str):
+        """生成缓存路径"""
+        h = hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
+        return os.path.join(CACHE_DIR, f"{h}.json")
+
+    def load_cache(text: str):
+        path = cache_key(text)
+        if os.path.exists(path):
+            try:
+                return json.load(open(path, "r", encoding="utf-8"))
+            except:
+                return None
+        return None
+
+    def save_cache(text: str, data: list):
+        path = cache_key(text)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def qwen_call_aff(aff: str):
+        """对单个作者机构获取其学科及其分数"""
+
+        # 首先判断是否有缓存
+        cached = load_cache(aff)
+        if cached is not None:
+            return aff, cached
+
+        # 调用通用的qwen接口
+        try:
+            mapped = call_qwen_rank(
+                text_block=aff,
+                disciplines_json=disciplines,
+                disciplines_intro_json={},
+                topn=topn_each,
+                mode="author_aff"
+            )
+
+            # 保存至缓存中
+            save_cache(aff, mapped or [])
+            time.sleep(sleep_time)
+            return aff, mapped or []
+        except Exception as e:
+            print(f"⚠️ {aff} 调用失败：{e}")
+            save_cache(aff, [])
+            return aff, []
+
+    # 获取单个学科文件中所有的作者结构并去重
+    all_affs = set()
+    for aff_json_str in df["CR_作者和机构"].fillna("").tolist():
+        try:
+            aff_list = json.loads(aff_json_str)
+            for author in aff_list:
+                for aff in author.get("affiliation", []):
+                    if isinstance(aff, str) and aff.strip():
+                        all_affs.add(aff.strip())
+        except Exception:
+            continue
+    all_affs = list(all_affs)
+
+    print(f"⚡ 并发调用 Qwen 模型进行机构学科识别（共 {len(all_affs)} 个唯一机构）...")
+
+    # 对单个学科文件中所有的机构并发调用 Qwen， 并保存结果至缓存
+    cache: Dict[str, List[Tuple[str, float]]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(qwen_call_aff, aff): aff for aff in all_affs}
+        for fut in tqdm(as_completed(futures), total=len(futures), ncols=90):
+            aff, mapped = fut.result()
+            cache[aff] = mapped or []
+
+    # 为每篇论文分配机构的学科分数结果
+    results_all = []
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="聚合作者机构结果", ncols=100):
+        # 取得这篇论文的原始作者机构列
+        aff_json_str = row.get("CR_作者和机构", "")
+        if not aff_json_str:
+            results_all.append([])
+            continue
+        try:
+            aff_list = json.loads(aff_json_str)
+        except Exception:
+            results_all.append([])
+            continue
+        
+        # 统计这篇论文中所有的学科分数和学科出现次数
+        score_sum = Counter()
+        doc_freq = Counter()
+
+        for author in aff_list:
+            for aff in author.get("affiliation", []):
+                if not isinstance(aff, str) or not aff.strip():
+                    continue
+                aff_clean = aff.strip()
+
+                # 从缓存中获取该机构的映射结果
+                mapped = cache.get(aff_clean, [])
+
+                # 记录每个学科的总分和出现次数
+                for subj, score in mapped or []:
+                    score_sum[subj] += score
+                    doc_freq[subj] += 1
+
+        if not score_sum:
+            results_all.append([])
+            continue
+
+        # 平均 + softmax 归一化
+        avg_scores = {k: score_sum[k] / doc_freq[k] for k in score_sum.keys()}
+        vals = np.array(list(avg_scores.values()), dtype=float)
+        e_x = np.exp(vals - np.max(vals))
+        probs = e_x / e_x.sum()
+        normed = {k: float(v) for k, v in zip(avg_scores.keys(), probs)}
+
+        # 按照学科最终的分数排序，取topk输出
+        top_items = sorted(normed.items(), key=lambda x: x[1], reverse=True)[:topk]
+        results_all.append([(k, round(v, 4)) for k, v in top_items])
+
+    print("✅ 作者机构学科识别完成")
+    return pd.Series(results_all)
+
 # ---------- 标题+摘要 先相似度再大模型判断----------
 def add_title_abs_scores(df: pd.DataFrame, topn: int = 5, use_gpu: bool = True) -> Tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
     """
@@ -519,140 +838,6 @@ def add_title_abs_scores(df: pd.DataFrame, topn: int = 5, use_gpu: bool = True) 
         pd.Series(list_final_all)      # 最终结果
     )
 
-# ---------- 作者机构：直接调用 Qwen ----------
-def add_author_aff_qwen(df: pd.DataFrame, topk: int = 5, topn_each: int = 2,
-                        sleep_time: float = 0.4, max_workers: int = 10) -> pd.Series:
-    """
-    对每篇论文的作者机构字段并发调用 Qwen 模型：
-    ----------------------------------------------------------
-    - 每个机构名并发调用 Qwen 识别学科（每机构最多 topn_each 个）
-    - 自动缓存已识别的机构结果（cache/qwen_author_aff/）
-    - 对所有机构结果求平均后 softmax 归一化，取前 topk 输出
-    输出格式：
-      [('0812 计算机科学与技术', 0.45), ('0835 软件工程', 0.35), ...]
-    ----------------------------------------------------------
-    """
-
-    # ✅ 从 CSV 读取学科列表
-    disciplines = []
-    with open(CSV_PATH, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if len(line) >= 5 and line[:4].isdigit():
-                disciplines.append(line)
-
-    # ✅ 缓存路径设置
-    CACHE_DIR = "cache/qwen_author_aff"
-    os.makedirs(CACHE_DIR, exist_ok=True)
-
-    def cache_key(text: str):
-        """生成缓存路径"""
-        h = hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
-        return os.path.join(CACHE_DIR, f"{h}.json")
-
-    def load_cache(text: str):
-        path = cache_key(text)
-        if os.path.exists(path):
-            try:
-                return json.load(open(path, "r", encoding="utf-8"))
-            except:
-                return None
-        return None
-
-    def save_cache(text: str, data: list):
-        path = cache_key(text)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-    # ✅ 单次调用函数
-    def qwen_call_aff(aff: str):
-        """单个机构调用（带缓存）"""
-        cached = load_cache(aff)
-        if cached is not None:
-            return aff, cached
-
-        try:
-            mapped = call_qwen_rank(
-                text_block=aff,
-                disciplines_json=disciplines,
-                disciplines_intro_json={},
-                topn=topn_each,
-                mode="author_aff"
-            )
-            save_cache(aff, mapped or [])
-            time.sleep(sleep_time)
-            return aff, mapped or []
-        except Exception as e:
-            print(f"⚠️ {aff} 调用失败：{e}")
-            save_cache(aff, [])
-            return aff, []
-
-    # ✅ 收集所有机构名称（去重）
-    all_affs = set()
-    for aff_json_str in df["CR_作者和机构"].fillna("").tolist():
-        try:
-            aff_list = json.loads(aff_json_str)
-            for author in aff_list:
-                for aff in author.get("affiliation", []):
-                    if isinstance(aff, str) and aff.strip():
-                        all_affs.add(aff.strip())
-        except Exception:
-            continue
-    all_affs = list(all_affs)
-
-    print(f"⚡ 并发调用 Qwen 模型进行机构学科识别（共 {len(all_affs)} 个唯一机构）...")
-
-    # ✅ 并发执行
-    cache: Dict[str, List[Tuple[str, float]]] = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(qwen_call_aff, aff): aff for aff in all_affs}
-        for fut in tqdm(as_completed(futures), total=len(futures), ncols=90):
-            aff, mapped = fut.result()
-            cache[aff] = mapped or []
-
-    # ✅ 聚合每篇论文的机构结果
-    results_all = []
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="聚合作者机构结果", ncols=100):
-        aff_json_str = row.get("CR_作者和机构", "")
-        if not aff_json_str:
-            results_all.append([])
-            continue
-
-        try:
-            aff_list = json.loads(aff_json_str)
-        except Exception:
-            results_all.append([])
-            continue
-
-        score_sum = Counter()
-        doc_freq = Counter()
-
-        for author in aff_list:
-            for aff in author.get("affiliation", []):
-                if not isinstance(aff, str) or not aff.strip():
-                    continue
-                aff_clean = aff.strip()
-                mapped = cache.get(aff_clean, [])
-                for subj, score in mapped or []:
-                    score_sum[subj] += score
-                    doc_freq[subj] += 1
-
-        if not score_sum:
-            results_all.append([])
-            continue
-
-        # 平均 + softmax 归一化
-        avg_scores = {k: score_sum[k] / doc_freq[k] for k in score_sum.keys()}
-        vals = np.array(list(avg_scores.values()), dtype=float)
-        e_x = np.exp(vals - np.max(vals))
-        probs = e_x / e_x.sum()
-        normed = {k: float(v) for k, v in zip(avg_scores.keys(), probs)}
-
-        top_items = sorted(normed.items(), key=lambda x: x[1], reverse=True)[:topk]
-        results_all.append([(k, round(v, 4)) for k, v in top_items])
-
-    print("✅ 作者机构学科识别完成！（已启用并发+缓存加速）")
-    return pd.Series(results_all)
 
 # ---------- 主函数 ----------
 def make_all_lists(
@@ -662,10 +847,16 @@ def make_all_lists(
     output_dir: str = None,
 ) -> pd.DataFrame:
     """
-    支持增量更新的主函数：
+    支持增量更新的获取最终输入数据主流程
+    -------------------------------------------------------------
+    :param input_file: 当前03openalex_data目录下的单个学科csv文件
+    :param mapping_csv: 存储了117个中国一级学科的csv文件，用于构建 作者机构提示词 供Qwen调用
+    :param origin_file: 原始的03openalex_data目录下的单个学科csv文件（基线），用于增量操作
+    :param output_dir: 是输出目录，04input_data，因为会自动与该目录下的同名csv文件合并
+
     1. 对比 origin_file（基线）与 input_file（最新）→ 仅处理新增 DOI；
     2. 对新增论文执行各类 list 生成；
-    3. 自动合并旧结果并保存至 output_dir；
+    3. 自动合并旧结果并保存至 output_dir 下的同名csv文件；
     """
 
     ROOT = Path(__file__).resolve().parents[2]
